@@ -1,29 +1,63 @@
-const express = require('express');
-const app = express();
+const axios = require('axios');
 
-app.use(express.json());
-
+// Aap ke live screen shot ki exact details:
+const PHONE_NUMBER_ID = "1208369552366735";
+const WHATSAPP_TOKEN = "YOUR_SYSTEM_USER_PERMANENT_TOKEN"; // Meta token yahan enter karein
 const VERIFY_TOKEN = "my_custom_secret_123";
 
-// Webhook Verification
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+module.exports = async (req, res) => {
+  // Verification (GET)
+  if (req.method === 'GET') {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('WEBHOOK_VERIFIED');
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      return res.status(200).send(challenge);
+    }
+    return res.status(403).send('Forbidden');
   }
-});
 
-// Message Listener
-app.post('/webhook', (req, res) => {
-  console.log('Incoming Message:', JSON.stringify(req.body, null, 2));
-  res.status(200).send('EVENT_RECEIVED');
-});
+  // Incoming Messages (POST)
+  if (req.method === 'POST') {
+    const body = req.body;
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+    if (body.object === 'whatsapp_business_account') {
+      const entry = body.entry?.[0];
+      const changes = entry?.changes?.[0];
+      const value = changes?.value;
+      const message = value?.messages?.[0];
+
+      if (message && message.type === 'text') {
+        const fromNumber = message.from;
+        const textBody = message.text.body;
+
+        console.log(`Received message "${textBody}" from ${fromNumber}`);
+
+        // Live Number Se Auto Reply Send Karein
+        try {
+          await axios.post(
+            `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`,
+            {
+              messaging_product: 'whatsapp',
+              to: fromNumber,
+              text: { body: `AI Sales Agent: Welcome! We received your message: "${textBody}"` }
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+        } catch (err) {
+          console.error('Send Error:', err.response?.data || err.message);
+        }
+      }
+      return res.status(200).send('EVENT_RECEIVED');
+    }
+    return res.status(404).send('Not Found');
+  }
+
+  res.status(405).send('Method Not Allowed');
+};
