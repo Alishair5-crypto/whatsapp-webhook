@@ -1,12 +1,9 @@
-const axios = require('axios');
-
-// Aap ke live screen shot ki exact details:
-const PHONE_NUMBER_ID = "1208369552366735";
-const WHATSAPP_TOKEN = "YOUR_SYSTEM_USER_PERMANENT_TOKEN"; // Meta token yahan enter karein
-const VERIFY_TOKEN = "my_custom_secret_123";
-
 module.exports = async (req, res) => {
-  // Verification (GET)
+  const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
+  const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "1208369552366735";
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_custom_secret_123";
+
+  // Meta Webhook Verification (GET)
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -18,7 +15,7 @@ module.exports = async (req, res) => {
     return res.status(403).send('Forbidden');
   }
 
-  // Incoming Messages (POST)
+  // Incoming WhatsApp Messages (POST)
   if (req.method === 'POST') {
     const body = req.body;
 
@@ -34,24 +31,22 @@ module.exports = async (req, res) => {
 
         console.log(`Received message "${textBody}" from ${fromNumber}`);
 
-        // Live Number Se Auto Reply Send Karein
+        // Native fetch request
         try {
-          await axios.post(
-            `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`,
-            {
+          await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
               messaging_product: 'whatsapp',
               to: fromNumber,
-              text: { body: `AI Sales Agent: Welcome! We received your message: "${textBody}"` }
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
+              text: { body: `AI Sales Agent: Assalam-o-Alaikum! We received your message: "${textBody}"` }
+            })
+          });
         } catch (err) {
-          console.error('Send Error:', err.response?.data || err.message);
+          console.error('Send Error:', err.message);
         }
       }
       return res.status(200).send('EVENT_RECEIVED');
