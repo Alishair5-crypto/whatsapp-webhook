@@ -16,7 +16,7 @@ module.exports = async (req, res) => {
 - Prices start from PKR 3,600 per suit.
 - Keep responses short, concise (1-2 lines), and in polite Roman Urdu mixed with English. Never use Hindi words.`;
 
-  // --- UPDATED WEBHOOK VERIFICATION (GET HANDLER) ---
+  // Webhook Verification
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'] || req.query['mode'];
     const token = req.query['hub.verify_token'] || req.query['verify_token'];
@@ -25,16 +25,10 @@ module.exports = async (req, res) => {
     if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
       return res.status(200).send(challenge);
     }
-    
-    // Safety Fallback for Meta validation ping
-    if (challenge) {
-      return res.status(200).send(challenge);
-    }
-
+    if (challenge) return res.status(200).send(challenge);
     return res.status(403).send('Forbidden');
   }
 
-  // --- POST HANDLER FOR INCOMING MESSAGES ---
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { 
@@ -48,15 +42,25 @@ module.exports = async (req, res) => {
 
     const fromNumber = message.from;
     let userMessageText = "";
-    let isAudioIncoming = false;
+    
+    // Robust Incoming Audio Detection
+    const isAudioIncoming = Boolean(
+      message.type === 'audio' || 
+      message.type === 'voice' || 
+      message.audio || 
+      message.voice
+    );
+
+    console.log(`Incoming Message Type: ${message.type}, Is Audio: ${isAudioIncoming}`);
 
     try {
       if (message.type === 'text') {
         userMessageText = message.text?.body || "";
-      } else if ((message.type === 'audio' || message.type === 'voice') && GROQ_API_KEY) {
-        isAudioIncoming = true;
+      } else if (isAudioIncoming && GROQ_API_KEY) {
         const mediaId = message.audio?.id || message.voice?.id;
+        console.log(`Processing Media ID: ${mediaId}`);
 
+        // Get Media Download URL
         const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
           headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
         });
@@ -73,6 +77,7 @@ module.exports = async (req, res) => {
           formData.append('model', 'whisper-large-v3');
           formData.append('language', 'ur');
 
+          // Transcribe Audio via Groq
           const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
@@ -82,6 +87,9 @@ module.exports = async (req, res) => {
           if (groqRes.ok) {
             const groqData = await groqRes.json();
             userMessageText = groqData.text;
+            console.log(`Transcribed Text: ${userMessageText}`);
+          } else {
+            console.error('Groq Error:', await groqRes.text());
           }
         }
       }
@@ -89,7 +97,7 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // Base44 API Call
+      // Base44 Response
       const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
         method: 'POST',
         headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
@@ -122,8 +130,9 @@ module.exports = async (req, res) => {
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
 
-      // ElevenLabs Text-To-Speech Processing
+      // ElevenLabs Speech Processing
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
+        console.log("Generating ElevenLabs Voice...");
         const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
           method: 'POST',
           headers: {
@@ -163,7 +172,11 @@ module.exports = async (req, res) => {
               })
             });
             return res.status(200).send('EVENT_RECEIVED');
+          } else {
+            console.error('WhatsApp Upload Error:', await uploadRes.text());
           }
+        } else {
+          console.error('ElevenLabs Error:', await ttsRes.text());
         }
       }
 
@@ -179,7 +192,7 @@ module.exports = async (req, res) => {
       });
 
     } catch (err) {
-      console.error('ERROR:', err.message);
+      console.error('SERVER ERROR:', err.message);
     }
 
     return res.status(200).send('EVENT_RECEIVED');
