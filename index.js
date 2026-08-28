@@ -16,7 +16,6 @@ module.exports = async (req, res) => {
 - Prices start from PKR 3,600 per suit.
 - Keep responses short, concise (1-2 lines), and in polite Roman Urdu mixed with English. Never use Hindi words.`;
 
-  // Webhook Verification
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'] || req.query['mode'];
     const token = req.query['hub.verify_token'] || req.query['verify_token'];
@@ -42,25 +41,14 @@ module.exports = async (req, res) => {
 
     const fromNumber = message.from;
     let userMessageText = "";
-    
-    // Robust Incoming Audio Detection
-    const isAudioIncoming = Boolean(
-      message.type === 'audio' || 
-      message.type === 'voice' || 
-      message.audio || 
-      message.voice
-    );
-
-    console.log(`Incoming Message Type: ${message.type}, Is Audio: ${isAudioIncoming}`);
+    const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
 
     try {
       if (message.type === 'text') {
         userMessageText = message.text?.body || "";
       } else if (isAudioIncoming && GROQ_API_KEY) {
         const mediaId = message.audio?.id || message.voice?.id;
-        console.log(`Processing Media ID: ${mediaId}`);
 
-        // Get Media Download URL
         const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
           headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
         });
@@ -70,26 +58,25 @@ module.exports = async (req, res) => {
           const audioStream = await fetch(mediaData.url, {
             headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
           });
-          const audioArrayBuffer = await audioStream.arrayBuffer();
+          const audioBuffer = Buffer.from(await audioStream.arrayBuffer());
 
-          const formData = new globalThis.FormData();
-          formData.append('file', new globalThis.Blob([audioArrayBuffer], { type: 'audio/ogg' }), 'voice.ogg');
+          const formData = new (require('form-data'))();
+          formData.append('file', audioBuffer, { filename: 'voice.ogg', contentType: 'audio/ogg' });
           formData.append('model', 'whisper-large-v3');
           formData.append('language', 'ur');
 
-          // Transcribe Audio via Groq
           const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
+            headers: { 
+              'Authorization': `Bearer ${GROQ_API_KEY}`,
+              ...formData.getHeaders()
+            },
             body: formData
           });
 
           if (groqRes.ok) {
             const groqData = await groqRes.json();
             userMessageText = groqData.text;
-            console.log(`Transcribed Text: ${userMessageText}`);
-          } else {
-            console.error('Groq Error:', await groqRes.text());
           }
         }
       }
@@ -97,7 +84,7 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // Base44 Response
+      // Base44 Request
       const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
         method: 'POST',
         headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
@@ -130,9 +117,8 @@ module.exports = async (req, res) => {
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
 
-      // ElevenLabs Speech Processing
+      // ElevenLabs Voice Response
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
-        console.log("Generating ElevenLabs Voice...");
         const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
           method: 'POST',
           headers: {
@@ -146,16 +132,19 @@ module.exports = async (req, res) => {
         });
 
         if (ttsRes.ok) {
-          const ttsArrayBuffer = await ttsRes.arrayBuffer();
+          const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
-          const mediaFormData = new globalThis.FormData();
+          const mediaFormData = new (require('form-data'))();
           mediaFormData.append('messaging_product', 'whatsapp');
-          mediaFormData.append('file', new globalThis.Blob([ttsArrayBuffer], { type: 'audio/mpeg' }), 'response.mp3');
+          mediaFormData.append('file', audioBuffer, { filename: 'response.mp3', contentType: 'audio/mpeg' });
           mediaFormData.append('type', 'audio/mpeg');
 
           const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
+            headers: { 
+              'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+              ...mediaFormData.getHeaders()
+            },
             body: mediaFormData
           });
 
@@ -172,15 +161,11 @@ module.exports = async (req, res) => {
               })
             });
             return res.status(200).send('EVENT_RECEIVED');
-          } else {
-            console.error('WhatsApp Upload Error:', await uploadRes.text());
           }
-        } else {
-          console.error('ElevenLabs Error:', await ttsRes.text());
         }
       }
 
-      // Text Fallback Reply
+      // Fallback Text Reply
       await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
@@ -192,7 +177,7 @@ module.exports = async (req, res) => {
       });
 
     } catch (err) {
-      console.error('SERVER ERROR:', err.message);
+      console.error('ERROR:', err.message);
     }
 
     return res.status(200).send('EVENT_RECEIVED');
