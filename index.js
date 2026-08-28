@@ -19,38 +19,44 @@ module.exports = async (req, res) => {
 
   // Incoming Messages (POST)
   if (req.method === 'POST') {
-    const body = req.body;
+    // Body parse handling
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch(e) {}
+    }
 
-    if (body.object === 'whatsapp_business_account') {
+    console.log('PAYLOAD_RECEIVED:', JSON.stringify(body));
+
+    if (body && body.object === 'whatsapp_business_account') {
       const entry = body.entry?.[0];
       const changes = entry?.changes?.[0];
-      const message = changes?.value?.messages?.[0];
+      const value = changes?.value;
+      const message = value?.messages?.[0];
 
-      if (message && message.type === 'text') {
+      if (message) {
         const fromNumber = message.from;
-        const textBody = message.text.body;
+        const textBody = message.text?.body || message.caption || "";
+
+        console.log(`Processing message from ${fromNumber}: ${textBody}`);
 
         try {
-          // 1. Message Base44 Agent ko bhejein (using exact header & endpoint)
+          // 1. Send to Base44 Agent
           const base44Res = await fetch(`${BASE44_BASE_URL}/conversations/${fromNumber}/messages`, {
             method: 'POST',
             headers: {
               'api_key': BASE44_API_KEY,
               'Content-Type': 'application/json'
             },
-            body: JSON.stringify({
-              content: textBody
-            })
+            body: JSON.stringify({ content: textBody })
           });
 
           const base44Data = await base44Res.json();
-          console.log('Base44 Response Data:', JSON.stringify(base44Data));
+          console.log('BASE44_RESPONSE:', JSON.stringify(base44Data));
 
-          // Base44 output extract karein
           const aiReply = base44Data.reply || base44Data.content || base44Data.message || base44Data.output || "Assalam-o-Alaikum! How can I assist you?";
 
-          // 2. Response WhatsApp par bhej dein
-          await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+          // 2. Reply back to WhatsApp
+          const waRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
@@ -63,13 +69,16 @@ module.exports = async (req, res) => {
             })
           });
 
+          const waData = await waRes.json();
+          console.log('WHATSAPP_SEND_RESPONSE:', JSON.stringify(waData));
+
         } catch (err) {
-          console.error('Base44 Pipeline Error:', err.message);
+          console.error('PIPELINE_ERROR:', err.message);
         }
       }
       return res.status(200).send('EVENT_RECEIVED');
     }
-    return res.status(404).send('Not Found');
+    return res.status(200).send('EVENT_RECEIVED');
   }
 
   res.status(405).send('Method Not Allowed');
