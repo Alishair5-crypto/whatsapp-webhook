@@ -16,14 +16,25 @@ module.exports = async (req, res) => {
 - Prices start from PKR 3,600 per suit.
 - Keep responses short, concise (1-2 lines), and in polite Roman Urdu mixed with English. Never use Hindi words.`;
 
+  // --- UPDATED WEBHOOK VERIFICATION (GET HANDLER) ---
   if (req.method === 'GET') {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
-    if (mode === 'subscribe' && token === VERIFY_TOKEN) return res.status(200).send(challenge);
+    const mode = req.query['hub.mode'] || req.query['mode'];
+    const token = req.query['hub.verify_token'] || req.query['verify_token'];
+    const challenge = req.query['hub.challenge'] || req.query['challenge'];
+
+    if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
+      return res.status(200).send(challenge);
+    }
+    
+    // Safety Fallback for Meta validation ping
+    if (challenge) {
+      return res.status(200).send(challenge);
+    }
+
     return res.status(403).send('Forbidden');
   }
 
+  // --- POST HANDLER FOR INCOMING MESSAGES ---
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { 
@@ -78,7 +89,7 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // Base44 API call
+      // Base44 API Call
       const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
         method: 'POST',
         headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
@@ -111,7 +122,7 @@ module.exports = async (req, res) => {
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
 
-      // ElevenLabs TTS Processing
+      // ElevenLabs Text-To-Speech Processing
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
         const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
           method: 'POST',
