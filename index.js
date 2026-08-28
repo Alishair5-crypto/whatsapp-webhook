@@ -3,7 +3,9 @@ module.exports = async (req, res) => {
   const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "1208369552366735";
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_custom_secret_123";
   const BASE44_API_KEY = process.env.BASE44_API_KEY || "f7539dd0947f4f1a8a1434b8e3c03f71";
-  const BASE44_BASE_URL = process.env.BASE44_BASE_URL || "https://app.base44.com/api/agents/6a7258c617116e6f8bdaee29";
+  
+  // Clean Base URL without any markdown brackets
+  const BASE44_BASE_URL = "https://app.base44.com/api/agents/6a7258c617116e6f8bdaee29";
 
   // Webhook Verification (GET)
   if (req.method === 'GET') {
@@ -19,13 +21,10 @@ module.exports = async (req, res) => {
 
   // Incoming Messages (POST)
   if (req.method === 'POST') {
-    // Body parse handling
     let body = req.body;
     if (typeof body === 'string') {
       try { body = JSON.parse(body); } catch(e) {}
     }
-
-    console.log('PAYLOAD_RECEIVED:', JSON.stringify(body));
 
     if (body && body.object === 'whatsapp_business_account') {
       const entry = body.entry?.[0];
@@ -37,11 +36,11 @@ module.exports = async (req, res) => {
         const fromNumber = message.from;
         const textBody = message.text?.body || message.caption || "";
 
-        console.log(`Processing message from ${fromNumber}: ${textBody}`);
-
         try {
-          // 1. Send to Base44 Agent
-          const base44Res = await fetch(`${BASE44_BASE_URL}/conversations/${fromNumber}/messages`, {
+          // 1. Send to Base44 Agent with clean URL string
+          const endpoint = `${BASE44_BASE_URL}/conversations/${fromNumber}/messages`;
+          
+          const base44Res = await fetch(endpoint, {
             method: 'POST',
             headers: {
               'api_key': BASE44_API_KEY,
@@ -55,8 +54,8 @@ module.exports = async (req, res) => {
 
           const aiReply = base44Data.reply || base44Data.content || base44Data.message || base44Data.output || "Assalam-o-Alaikum! How can I assist you?";
 
-          // 2. Reply back to WhatsApp
-          const waRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+          // 2. Send Response back to WhatsApp
+          await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
@@ -68,9 +67,6 @@ module.exports = async (req, res) => {
               text: { body: aiReply }
             })
           });
-
-          const waData = await waRes.json();
-          console.log('WHATSAPP_SEND_RESPONSE:', JSON.stringify(waData));
 
         } catch (err) {
           console.error('PIPELINE_ERROR:', err.message);
