@@ -3,9 +3,16 @@ module.exports = async (req, res) => {
   const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "1208369552366735";
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_custom_secret_123";
   const BASE44_API_KEY = process.env.BASE44_API_KEY || "f7539dd0947f4f1a8a1434b8e3c03f71";
-  
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
   const AGENT_ID = "6a7258c617116e6f8bdaee29";
   const CONVERSATION_ID = "6a7258ca11d24606478a2812";
+
+  // Detailed Sales System Prompt for Fallback Engine
+  const SYSTEM_PROMPT = `You are Zara, a polite sales assistant at Fatima Arts (unstitched suit brand).
+- Fabrics: Lawn, Khaddar, Marina, Velvet, Cotton.
+- Price range: Starting from PKR 3,600 per suit.
+- Language style: Polite Roman Urdu and English blend. Keep replies concise and sales-focused.`;
 
   // Webhook Verification (GET)
   if (req.method === 'GET') {
@@ -35,9 +42,10 @@ module.exports = async (req, res) => {
       if (message) {
         const fromNumber = message.from;
         const textBody = message.text?.body || message.caption || "";
+        let aiReply = "";
 
         try {
-          // 1. Send Message to exact Base44 Conversation Path
+          // 1. Try Base44 First
           const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
             method: 'POST',
             headers: {
@@ -47,18 +55,48 @@ module.exports = async (req, res) => {
             body: JSON.stringify({ content: textBody })
           });
 
-          const base44Data = await base44Res.json();
-          console.log('BASE44_REPLY:', JSON.stringify(base44Data));
+          if (base44Res.ok) {
+            const base44Data = await base44Res.json();
+            
+            // Extract reply and ensure it's not an error payload
+            const rawReply = base44Data.reply || base44Data.content || base44Data.message || base44Data.output;
+            if (rawReply && typeof rawReply === 'string' && !rawReply.toLowerCase().includes('credit') && !rawReply.toLowerCase().includes('quota')) {
+              aiReply = rawReply;
+            }
+          }
 
-          // Reply string parsing
-          const aiReply = base44Data.reply || 
-                          base44Data.content || 
-                          base44Data.message || 
-                          base44Data.output || 
-                          (Array.isArray(base44Data) && base44Data[0]?.content) ||
-                          "Assalam-o-Alaikum! How can I assist you?";
+          // 2. Fallback to OpenAI if Base44 fails or returns error/out of credits
+          if (!aiReply && OPENAI_API_KEY) {
+            console.log("Base44 response invalid/empty. Falling back to OpenAI...");
+            const openAiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${OPENAI_API_KEY}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                model: 'gpt-4o-mini',
+                messages: [
+                  { role: 'system', content: SYSTEM_PROMPT },
+                  { role: 'user', content: textBody }
+                ],
+                temperature: 0.7,
+                max_tokens: 250
+              })
+            });
 
-          // 2. Forward AI Response to Customer on WhatsApp
+            if (openAiRes.ok) {
+              const openAiData = await openAiRes.json();
+              aiReply = openAiData.choices?.[0]?.message?.content;
+            }
+          }
+
+          // 3. Static Safety Fallback
+          if (!aiReply) {
+            aiReply = "Assalam-o-Alaikum! Welcome to Fatima Arts. How can I assist you today?";
+          }
+
+          // 4. Send Message back to WhatsApp
           await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method: 'POST',
             headers: {
