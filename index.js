@@ -49,28 +49,28 @@ module.exports = async (req, res) => {
       } else if (isAudioIncoming && GROQ_API_KEY) {
         const mediaId = message.audio?.id || message.voice?.id;
 
+        // Step 1: Get Media URL from Meta
         const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
           headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
         });
         const mediaData = await mediaRes.json();
 
         if (mediaData.url) {
+          // Step 2: Download Audio Stream
           const audioStream = await fetch(mediaData.url, {
             headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
           });
-          const audioBuffer = Buffer.from(await audioStream.arrayBuffer());
+          const audioBlob = await audioStream.blob();
 
-          const formData = new (require('form-data'))();
-          formData.append('file', audioBuffer, { filename: 'voice.ogg', contentType: 'audio/ogg' });
+          // Step 3: Transcribe with Groq using Native FormData
+          const formData = new globalThis.FormData();
+          formData.append('file', audioBlob, 'voice.ogg');
           formData.append('model', 'whisper-large-v3');
           formData.append('language', 'ur');
 
           const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
             method: 'POST',
-            headers: { 
-              'Authorization': `Bearer ${GROQ_API_KEY}`,
-              ...formData.getHeaders()
-            },
+            headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
             body: formData
           });
 
@@ -84,7 +84,7 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // Base44 Request
+      // Step 4: Base44 Agent Call
       const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
         method: 'POST',
         headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
@@ -99,7 +99,7 @@ module.exports = async (req, res) => {
         }
       }
 
-      // Gemini Fallback
+      // Step 5: Gemini Fallback Call
       if (!aiReply && GEMINI_API_KEY) {
         const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
           method: 'POST',
@@ -117,7 +117,7 @@ module.exports = async (req, res) => {
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
 
-      // ElevenLabs Voice Response
+      // Step 6: ElevenLabs Voice Generation & Meta Upload
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
         const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
           method: 'POST',
@@ -132,19 +132,16 @@ module.exports = async (req, res) => {
         });
 
         if (ttsRes.ok) {
-          const audioBuffer = Buffer.from(await ttsRes.arrayBuffer());
+          const ttsBlob = await ttsRes.blob();
 
-          const mediaFormData = new (require('form-data'))();
+          const mediaFormData = new globalThis.FormData();
           mediaFormData.append('messaging_product', 'whatsapp');
-          mediaFormData.append('file', audioBuffer, { filename: 'response.mp3', contentType: 'audio/mpeg' });
+          mediaFormData.append('file', ttsBlob, 'response.mp3');
           mediaFormData.append('type', 'audio/mpeg');
 
           const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
             method: 'POST',
-            headers: { 
-              'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-              ...mediaFormData.getHeaders()
-            },
+            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
             body: mediaFormData
           });
 
@@ -165,7 +162,7 @@ module.exports = async (req, res) => {
         }
       }
 
-      // Fallback Text Reply
+      // Step 7: Fallback Text Reply
       await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
@@ -177,7 +174,7 @@ module.exports = async (req, res) => {
       });
 
     } catch (err) {
-      console.error('ERROR:', err.message);
+      console.error('SERVER ERROR:', err.message);
     }
 
     return res.status(200).send('EVENT_RECEIVED');
