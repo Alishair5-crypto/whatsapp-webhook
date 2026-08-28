@@ -3,16 +3,16 @@ module.exports = async (req, res) => {
   const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "1208369552366735";
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_custom_secret_123";
   const BASE44_API_KEY = process.env.BASE44_API_KEY || "f7539dd0947f4f1a8a1434b8e3c03f71";
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
   const AGENT_ID = "6a7258c617116e6f8bdaee29";
   const CONVERSATION_ID = "6a7258ca11d24606478a2812";
 
-  // Detailed Sales System Prompt for Fallback Engine
+  // System Prompt for Free Gemini Fallback
   const SYSTEM_PROMPT = `You are Zara, a polite sales assistant at Fatima Arts (unstitched suit brand).
 - Fabrics: Lawn, Khaddar, Marina, Velvet, Cotton.
-- Price range: Starting from PKR 3,600 per suit.
-- Language style: Polite Roman Urdu and English blend. Keep replies concise and sales-focused.`;
+- Prices start from PKR 3,600 per suit.
+- Keep responses short, concise, and in polite Roman Urdu mixed with English.`;
 
   // Webhook Verification (GET)
   if (req.method === 'GET') {
@@ -57,46 +57,40 @@ module.exports = async (req, res) => {
 
           if (base44Res.ok) {
             const base44Data = await base44Res.json();
-            
-            // Extract reply and ensure it's not an error payload
             const rawReply = base44Data.reply || base44Data.content || base44Data.message || base44Data.output;
             if (rawReply && typeof rawReply === 'string' && !rawReply.toLowerCase().includes('credit') && !rawReply.toLowerCase().includes('quota')) {
               aiReply = rawReply;
             }
           }
 
-          // 2. Fallback to OpenAI if Base44 fails or returns error/out of credits
-          if (!aiReply && OPENAI_API_KEY) {
-            console.log("Base44 response invalid/empty. Falling back to OpenAI...");
-            const openAiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+          // 2. Fallback to FREE Gemini API if Base44 fails
+          if (!aiReply && GEMINI_API_KEY) {
+            console.log("Base44 empty/failed. Switching to Free Gemini API...");
+            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
               method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${OPENAI_API_KEY}`,
-                'Content-Type': 'application/json'
-              },
+              headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                model: 'gpt-4o-mini',
-                messages: [
-                  { role: 'system', content: SYSTEM_PROMPT },
-                  { role: 'user', content: textBody }
-                ],
-                temperature: 0.7,
-                max_tokens: 250
+                system_instruction: {
+                  parts: [{ text: SYSTEM_PROMPT }]
+                },
+                contents: [{
+                  parts: [{ text: textBody }]
+                }]
               })
             });
 
-            if (openAiRes.ok) {
-              const openAiData = await openAiRes.json();
-              aiReply = openAiData.choices?.[0]?.message?.content;
+            if (geminiRes.ok) {
+              const geminiData = await geminiRes.json();
+              aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
             }
           }
 
           // 3. Static Safety Fallback
           if (!aiReply) {
-            aiReply = "Assalam-o-Alaikum! Welcome to Fatima Arts. How can I assist you today?";
+            aiReply = "Assalam-o-Alaikum! Welcome to Fatima Arts. How can I help you today?";
           }
 
-          // 4. Send Message back to WhatsApp
+          // 4. Send Response back to WhatsApp
           await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method: 'POST',
             headers: {
