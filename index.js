@@ -1,13 +1,13 @@
 module.exports = async (req, res) => {
-  // 1. Core Configs
   const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
   const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "1208369552366735";
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_custom_secret_123";
-  
   const BASE44_API_KEY = process.env.BASE44_API_KEY || "f7539dd0947f4f1a8a1434b8e3c03f71";
-  const BASE44_AGENT_ENDPOINT = "https://app.base44.com/api/agents/6a7258c617116e6f8bdaee29";
+  
+  const AGENT_ID = "6a7258c617116e6f8bdaee29";
+  const CONVERSATION_ID = "6a7258ca11d24606478a2812";
 
-  // 2. Meta Webhook Verification (GET)
+  // Webhook Verification (GET)
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
@@ -19,7 +19,7 @@ module.exports = async (req, res) => {
     return res.status(403).send('Forbidden');
   }
 
-  // 3. Incoming WhatsApp Webhook (POST)
+  // Incoming WhatsApp Messages (POST)
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') {
@@ -37,8 +37,8 @@ module.exports = async (req, res) => {
         const textBody = message.text?.body || message.caption || "";
 
         try {
-          // A. Pass Message to Base44 Agent API
-          const base44Res = await fetch(`${BASE44_AGENT_ENDPOINT}/conversations/${fromNumber}/messages`, {
+          // 1. Send Message to exact Base44 Conversation Path
+          const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
             method: 'POST',
             headers: {
               'api_key': BASE44_API_KEY,
@@ -48,15 +48,17 @@ module.exports = async (req, res) => {
           });
 
           const base44Data = await base44Res.json();
-          
-          // Extract reply string from Base44 schema
+          console.log('BASE44_REPLY:', JSON.stringify(base44Data));
+
+          // Reply string parsing
           const aiReply = base44Data.reply || 
                           base44Data.content || 
                           base44Data.message || 
                           base44Data.output || 
+                          (Array.isArray(base44Data) && base44Data[0]?.content) ||
                           "Assalam-o-Alaikum! How can I assist you?";
 
-          // B. Forward AI Response to Customer's WhatsApp
+          // 2. Forward AI Response to Customer on WhatsApp
           await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method: 'POST',
             headers: {
