@@ -1,43 +1,42 @@
 module.exports = async (req, res) => {
-  // Environment Variables
-  const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-  const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-  const BASE44_API_KEY = process.env.BASE44_API_KEY;
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  const GROQ_API_KEY = process.env.GROQ_API_KEY;
-  const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-  const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "9BWL2FjLHABvoXxVcR8p";
-  const BASE44_AGENT_ID = process.env.BASE44_AGENT_ID;
-  const BASE44_CONVERSATION_ID = process.env.BASE44_CONVERSATION_ID;
+  // 1. Environment Variables
+  const WHATSAPP_TOKEN = (process.env.WHATSAPP_TOKEN || "").trim();
+  const PHONE_NUMBER_ID = (process.env.PHONE_NUMBER_ID || "").trim();
+  const VERIFY_TOKEN = (process.env.VERIFY_TOKEN || "").trim();
+  const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim();
+  const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
+  const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
+  const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "9BWL2FjLHABvoXxVcR8p").trim();
 
   const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts ki official customer support representative (unstitched suit brand, Faisalabad).
 - 1 to 9 Suits = PKR 3,600 per suit.
 - 10 or more Suits = PKR 2,999 per suit.
-- Tone polite, warm, aur direct concise Roman Urdu mein rakhein (1-2 short sentences maximum).
-- Dynamic behavior: Agar user ne koi kapray, color ya variety ka poocha hai to exact detail batayein. Greeting repeated kiye bina question ka answer dein.`;
+- Delivery Charges: PKR 200 all over Pakistan (including Faisalabad).
+- Available Fabrics: Lawn, Cotton, Marina, Khaddar, and Linen in various colors including Black.
+- Tone: Polite, warm, and direct Roman Urdu (1-2 short sentences maximum). Answer the user's specific question directly without repeating generic greetings.`;
 
-  // 1. Webhook Verification (GET Request)
+  // 2. Webhook Verification (GET Request)
   if (req.method === 'GET') {
-    const mode = req.query['hub.mode'] || req.query['mode'];
-    const token = req.query['hub.verify_token'] || req.query['verify_token'];
-    const challenge = req.query['hub.challenge'] || req.query['challenge'];
+    const fullUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const mode = fullUrl.searchParams.get('hub.mode') || req.query?.['hub.mode'] || req.query?.mode;
+    const token = fullUrl.searchParams.get('hub.verify_token') || req.query?.['hub.verify_token'] || req.query?.verify_token;
+    const challenge = fullUrl.searchParams.get('hub.challenge') || req.query?.['hub.challenge'] || req.query?.challenge;
 
     if (mode && token) {
       if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
-        console.log("WEBHOOK_VERIFIED");
+        console.log("[VERIFICATION SUCCESS] Webhook verified");
         return res.status(200).send(challenge);
       }
       return res.status(403).send('Verification Token Mismatch');
     }
-    return res.status(200).send(challenge || 'Webhook Endpoint Active');
+    return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // 2. Webhook Event Processing (POST Request)
+  // 3. Webhook Event Processing (POST Request)
   if (req.method === 'POST') {
     let body = req.body;
-    if (typeof body === 'string') { 
-      try { body = JSON.parse(body); } catch (e) {} 
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch (e) {}
     }
 
     const entry = body?.entry?.[0];
@@ -93,69 +92,57 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // --- STEP B: LLM Response Generation (Gemini 2.5 Flash Native Standard REST) ---
+      // --- STEP B: Multi-Model Gemini Engine (Failover Protection) ---
       if (GEMINI_API_KEY) {
-        try {
-          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              system_instruction: {
-                parts: [{ text: SYSTEM_PROMPT }]
-              },
-              contents: [{
-                role: "user",
-                parts: [{ text: userMessageText }]
-              }]
-            })
-          });
+        const candidateModels = ["gemini-2.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro-latest"];
 
-          if (geminiRes.ok) {
-            const geminiData = await geminiRes.json();
-            aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
-          } else {
-            const errBody = await geminiRes.text();
-            console.error("[STEP B ERROR] Gemini API raw failure:", errBody);
+        for (const model of candidateModels) {
+          if (aiReply) break;
+          try {
+            console.log(`[STEP B] Attempting Gemini model: ${model}...`);
+            const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                system_instruction: {
+                  parts: [{ text: SYSTEM_PROMPT }]
+                },
+                contents: [{
+                  role: "user",
+                  parts: [{ text: userMessageText }]
+                }]
+              })
+            });
+
+            if (geminiRes.ok) {
+              const geminiData = await geminiRes.json();
+              aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+              if (aiReply) {
+                console.log(`[STEP B SUCCESS] Generated via ${model}:`, aiReply);
+              }
+            } else {
+              const errBody = await geminiRes.text();
+              console.error(`[STEP B ERROR] Model ${model} returned HTTP ${geminiRes.status}:`, errBody);
+            }
+          } catch (e) {
+            console.error(`[STEP B EXCEPTION] ${model}:`, e.message);
           }
-        } catch (e) {
-          console.error("[STEP B ERROR] Gemini Exception:", e);
         }
       }
 
-      // Base44 Secondary Fallback
-      if (!aiReply && BASE44_API_KEY && BASE44_AGENT_ID && BASE44_CONVERSATION_ID) {
-        try {
-          const base44Res = await fetch(`https://app.base44.com/api/agents/${BASE44_AGENT_ID}/conversations/${BASE44_CONVERSATION_ID}/messages`, {
-            method: 'POST',
-            headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content: userMessageText })
-          });
-
-          if (base44Res.ok) {
-            const base44Data = await base44Res.json();
-            const rawReply = base44Data.reply || base44Data.content || base44Data.message || base44Data.output;
-            if (rawReply && typeof rawReply === 'string' && !rawReply.toLowerCase().includes('credit')) {
-              aiReply = rawReply;
-            }
-          }
-        } catch (e) {}
-      }
-
-      // Dynamic Keyword Context Fallback
+      // Context-Aware Backup (Triggers ONLY if AI Key completely fails)
       if (!aiReply) {
         const query = userMessageText.toLowerCase();
-        if (query.includes('color') || query.includes('kapra') || query.includes('variety') || query.includes('design') || query.includes('marina') || query.includes('black')) {
-          aiReply = "Hamare paas premium Lawn, Cotton aur Marina unstitched suits mein variety available hai. Single suit PKR 3,600 ka hai.";
-        } else if (query.includes('price') || query.includes('rate') || query.includes('kitne')) {
-          aiReply = "Fatima Arts par 1 se 9 suits PKR 3,600 per suit hain, jabke 10 ya usse zyada order par wholesale rate PKR 2,999 per suit milega.";
+        if (query.includes('marina') || query.includes('khaddar') || query.includes('black') || query.includes('color') || query.includes('kapra') || query.includes('بلیک') || query.includes('مرینہ') || query.includes('خدر')) {
+          aiReply = "Walaikum Assalam! Ji Fatima Arts par Black color mein Marina aur Khaddar dono available hain. Price PKR 3,600 per suit hai aur Faisalabad mein delivery charges PKR 200 hain.";
+        } else if (query.includes('price') || query.includes('rate') || query.includes('قیمت')) {
+          aiReply = "Fatima Arts par 1 se 9 suits PKR 3,600 per suit hain, 10 ya zyada par PKR 2,999 wholesale rate hai. Delivery charges PKR 200 hain.";
         } else {
-          aiReply = "Walaikum Assalam! Ji Fatima Arts mein aapko kaunse fabric ya designs dekhne hain?";
+          aiReply = "Walaikum Assalam! Ji Fatima Arts mein aapko kaunsa fabric ya design dekhna hai?";
         }
       }
 
-      console.log("[STEP B SUCCESS] AI Generated Reply:", aiReply);
-
-      // --- STEP C: Text-To-Speech (ElevenLabs) & Send Audio ---
+      // --- STEP C: Text-To-Speech (ElevenLabs) & Audio Response ---
       let voiceSentSuccess = false;
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
         try {
@@ -213,9 +200,11 @@ module.exports = async (req, res) => {
                 console.log("[STEP C SUCCESS] Voice note sent successfully!");
               }
             }
+          } else {
+            console.error("[STEP C ERROR] ElevenLabs HTTP failure:", await ttsRes.text());
           }
         } catch (err) {
-          console.error("[STEP C ERROR]:", err.message);
+          console.error("[STEP C ERROR] Exception:", err.message);
         }
       }
 
