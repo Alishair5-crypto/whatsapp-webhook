@@ -17,13 +17,11 @@ module.exports = async (req, res) => {
 - Tone polite, warm, aur short (1-2 lines) Roman Urdu mein rakhein.
 - Voice note query par hamesha short greeting aur helpful answer dein.`;
 
-  // 1. Webhook Verification (GET Request Fix)
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'] || req.query['mode'];
     const token = req.query['hub.verify_token'] || req.query['verify_token'];
     const challenge = req.query['hub.challenge'] || req.query['challenge'];
 
-    // Meta verification challenge handling
     if (mode && token) {
       if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
         console.log("WEBHOOK_VERIFIED");
@@ -32,7 +30,6 @@ module.exports = async (req, res) => {
       return res.status(403).send('Verification Token Mismatch');
     }
 
-    // Direct Challenge Pass-through Fallback
     if (challenge) {
       return res.status(200).send(challenge);
     }
@@ -40,7 +37,6 @@ module.exports = async (req, res) => {
     return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // 2. Incoming Messages Handling (POST Request)
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { 
@@ -57,27 +53,23 @@ module.exports = async (req, res) => {
     const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
 
     try {
-      // Step A: Parse Text or Voice Message
       if (message.type === 'text') {
         userMessageText = message.text?.body || "";
       } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
         const mediaId = message.audio?.id || message.voice?.id;
 
-        // Fetch Media URL from Meta
         const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
           headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
         });
         const mediaData = await mediaRes.json();
 
         if (mediaData.url) {
-          // Download Binary Audio File
           const audioStream = await fetch(mediaData.url, {
             headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
           });
           const arrayBuffer = await audioStream.arrayBuffer();
           const buffer = Buffer.from(arrayBuffer);
 
-          // Transcribe via Groq Whisper API
           const formData = new globalThis.FormData();
           const blob = new globalThis.Blob([buffer], { type: 'audio/ogg' });
           formData.append('file', blob, 'voice.ogg');
@@ -100,7 +92,6 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // Step B: Generate Response (Gemini Flash)
       if (GEMINI_API_KEY) {
         try {
           const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
@@ -120,7 +111,6 @@ module.exports = async (req, res) => {
         }
       }
 
-      // Base44 Fallback
       if (!aiReply && BASE44_API_KEY) {
         try {
           const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
@@ -141,16 +131,15 @@ module.exports = async (req, res) => {
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
 
-      // Step C: Generate & Send Voice Note Reply via ElevenLabs
       let voiceSentSuccess = false;
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN) {
         try {
-          const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=opus_16000`, {
+          const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
             method: 'POST',
             headers: {
               'xi-api-key': ELEVENLABS_API_KEY,
               'Content-Type': 'application/json',
-              'Accept': 'audio/ogg'
+              'Accept': 'audio/mpeg'
             },
             body: JSON.stringify({
               text: aiReply,
@@ -164,10 +153,10 @@ module.exports = async (req, res) => {
             const audioBuffer = Buffer.from(arrayBuffer);
 
             const mediaFormData = new globalThis.FormData();
-            const audioBlob = new globalThis.Blob([audioBuffer], { type: 'audio/ogg' });
+            const audioBlob = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
             mediaFormData.append('messaging_product', 'whatsapp');
-            mediaFormData.append('file', audioBlob, 'voice.opus');
-            mediaFormData.append('type', 'audio/ogg');
+            mediaFormData.append('file', audioBlob, 'voice.mp3');
+            mediaFormData.append('type', 'audio/mpeg');
 
             const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
               method: 'POST',
@@ -177,12 +166,16 @@ module.exports = async (req, res) => {
 
             const uploadData = await uploadRes.json();
 
-            if (uploadData.id) {
+            if (uploadData && uploadData.id) {
               const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
                 method: 'POST',
-                headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                headers: { 
+                  'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 
+                  'Content-Type': 'application/json' 
+                },
                 body: JSON.stringify({
                   messaging_product: 'whatsapp',
+                  recipient_type: 'individual',
                   to: fromNumber,
                   type: 'audio',
                   audio: { id: uploadData.id }
@@ -199,15 +192,19 @@ module.exports = async (req, res) => {
         }
       }
 
-      // Step D: Fallback Text Reply
       if (!voiceSentSuccess && WHATSAPP_TOKEN) {
         await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
           method: 'POST',
-          headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+          headers: { 
+            'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 
+            'Content-Type': 'application/json' 
+          },
           body: JSON.stringify({
             messaging_product: 'whatsapp',
+            recipient_type: 'individual',
             to: fromNumber,
-            text: { body: aiReply }
+            type: 'text',
+            text: { preview_url: false, body: aiReply }
           })
         });
       }
