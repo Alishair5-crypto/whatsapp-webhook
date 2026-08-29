@@ -1,15 +1,15 @@
 module.exports = async (req, res) => {
+  // Environment Variables
   const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-  const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || "1208369552366735";
-  const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_custom_secret_123";
-  const BASE44_API_KEY = process.env.BASE44_API_KEY || "f7539dd0947f4f1a8a1434b8e3c03f71";
+  const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+  const BASE44_API_KEY = process.env.BASE44_API_KEY;
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   const GROQ_API_KEY = process.env.GROQ_API_KEY;
   const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-  const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
-
-  const AGENT_ID = "6a7258c617116e6f8bdaee29";
-  const CONVERSATION_ID = "6a7258ca11d24606478a2812";
+  const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "Zjj2iX3aHYDcJSG4mMzk";
+  const BASE44_AGENT_ID = process.env.BASE44_AGENT_ID;
+  const BASE44_CONVERSATION_ID = process.env.BASE44_CONVERSATION_ID;
 
   const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts ki official customer support representative (unstitched suit brand, Faisalabad).
 - 1 to 9 Suits = PKR 3,600 per suit.
@@ -17,6 +17,7 @@ module.exports = async (req, res) => {
 - Tone polite, warm, aur short (1-2 lines) Roman Urdu mein rakhein.
 - Voice note query par hamesha short greeting aur helpful answer dein.`;
 
+  // 1. Webhook Verification (GET Request)
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'] || req.query['mode'];
     const token = req.query['hub.verify_token'] || req.query['verify_token'];
@@ -37,6 +38,7 @@ module.exports = async (req, res) => {
     return res.status(200).send('Webhook Endpoint Active');
   }
 
+  // 2. Webhook Event Processing (POST Request)
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { 
@@ -53,9 +55,11 @@ module.exports = async (req, res) => {
     const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
 
     try {
+      // --- STEP A: Audio Transcription (Groq Whisper) ---
       if (message.type === 'text') {
         userMessageText = message.text?.body || "";
       } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
+        console.log("[STEP A] Fetching audio media from Meta...");
         const mediaId = message.audio?.id || message.voice?.id;
 
         const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
@@ -74,7 +78,6 @@ module.exports = async (req, res) => {
           const blob = new globalThis.Blob([buffer], { type: 'audio/ogg' });
           formData.append('file', blob, 'voice.ogg');
           formData.append('model', 'whisper-large-v3');
-          formData.append('language', 'ur');
 
           const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
             method: 'POST',
@@ -85,6 +88,9 @@ module.exports = async (req, res) => {
           if (groqRes.ok) {
             const groqData = await groqRes.json();
             userMessageText = groqData.text;
+            console.log("[STEP A SUCCESS] Transcribed Text:", userMessageText);
+          } else {
+            console.error("[STEP A ERROR] Groq failed:", await groqRes.text());
           }
         }
       }
@@ -92,6 +98,7 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
+      // --- STEP B: LLM Response Generation ---
       if (GEMINI_API_KEY) {
         try {
           const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
@@ -107,13 +114,13 @@ module.exports = async (req, res) => {
             aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
           }
         } catch (e) {
-          console.error("Gemini Error:", e);
+          console.error("[STEP B ERROR] Gemini Exception:", e);
         }
       }
 
-      if (!aiReply && BASE44_API_KEY) {
+      if (!aiReply && BASE44_API_KEY && BASE44_AGENT_ID && BASE44_CONVERSATION_ID) {
         try {
-          const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
+          const base44Res = await fetch(`https://app.base44.com/api/agents/${BASE44_AGENT_ID}/conversations/${BASE44_CONVERSATION_ID}/messages`, {
             method: 'POST',
             headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: userMessageText })
@@ -130,10 +137,13 @@ module.exports = async (req, res) => {
       }
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
+      console.log("[STEP B SUCCESS] AI Generated Reply:", aiReply);
 
+      // --- STEP C: Text-To-Speech (ElevenLabs) & Send Audio ---
       let voiceSentSuccess = false;
-      if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN) {
+      if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
         try {
+          console.log("[STEP C] Requesting TTS audio from ElevenLabs...");
           const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
             method: 'POST',
             headers: {
@@ -152,6 +162,7 @@ module.exports = async (req, res) => {
             const arrayBuffer = await ttsRes.arrayBuffer();
             const audioBuffer = Buffer.from(arrayBuffer);
 
+            console.log("[STEP C] Uploading MP3 to Meta Media Endpoint...");
             const mediaFormData = new globalThis.FormData();
             const audioBlob = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
             mediaFormData.append('messaging_product', 'whatsapp');
@@ -165,8 +176,10 @@ module.exports = async (req, res) => {
             });
 
             const uploadData = await uploadRes.json();
+            console.log("[STEP C] Meta Media Response:", uploadData);
 
             if (uploadData && uploadData.id) {
+              console.log("[STEP C] Delivering WhatsApp Voice Message...");
               const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
                 method: 'POST',
                 headers: { 
@@ -184,15 +197,24 @@ module.exports = async (req, res) => {
 
               if (sendVoiceRes.ok) {
                 voiceSentSuccess = true;
+                console.log("[STEP C SUCCESS] Voice note sent successfully!");
+              } else {
+                console.error("[STEP C ERROR] Meta message delivery failed:", await sendVoiceRes.text());
               }
+            } else {
+              console.error("[STEP C ERROR] Media ID not returned from Meta upload.");
             }
+          } else {
+            console.error("[STEP C ERROR] ElevenLabs TTS error:", await ttsRes.text());
           }
         } catch (err) {
-          console.error("Audio generation failed:", err);
+          console.error("[STEP C CATCH ERROR]:", err.message);
         }
       }
 
-      if (!voiceSentSuccess && WHATSAPP_TOKEN) {
+      // --- STEP D: Text Fallback ---
+      if (!voiceSentSuccess && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+        console.log("[STEP D] Voice failed or unavailable. Delivering text message fallback...");
         await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
           method: 'POST',
           headers: { 
@@ -210,7 +232,7 @@ module.exports = async (req, res) => {
       }
 
     } catch (err) {
-      console.error('SERVER ERROR:', err.message);
+      console.error('SERVER FATAL ERROR:', err.message);
     }
 
     return res.status(200).send('EVENT_RECEIVED');
