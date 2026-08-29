@@ -93,16 +93,19 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // --- STEP B: LLM Response Generation (Gemini 1.5 Flash Standard Fix) ---
+      // --- STEP B: LLM Response Generation (Gemini 2.5 Flash Native Standard REST) ---
       if (GEMINI_API_KEY) {
         try {
-          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              system_instruction: {
+                parts: [{ text: SYSTEM_PROMPT }]
+              },
               contents: [{
                 role: "user",
-                parts: [{ text: `${SYSTEM_PROMPT}\n\nUser Question: ${userMessageText}` }]
+                parts: [{ text: userMessageText }]
               }]
             })
           });
@@ -138,11 +141,11 @@ module.exports = async (req, res) => {
         } catch (e) {}
       }
 
-      // Intelligent Dynamic Fallback (If API key fails/throttled)
+      // Dynamic Keyword Context Fallback
       if (!aiReply) {
         const query = userMessageText.toLowerCase();
-        if (query.includes('color') || query.includes('kapra') || query.includes('variety') || query.includes('design')) {
-          aiReply = "Hamare paas premium Lawn aur Cotton unstitched suits mein multicolored printed aur embroidered varieties available hain. 1 suit PKR 3,600 ka hai.";
+        if (query.includes('color') || query.includes('kapra') || query.includes('variety') || query.includes('design') || query.includes('marina') || query.includes('black')) {
+          aiReply = "Hamare paas premium Lawn, Cotton aur Marina unstitched suits mein variety available hai. Single suit PKR 3,600 ka hai.";
         } else if (query.includes('price') || query.includes('rate') || query.includes('kitne')) {
           aiReply = "Fatima Arts par 1 se 9 suits PKR 3,600 per suit hain, jabke 10 ya usse zyada order par wholesale rate PKR 2,999 per suit milega.";
         } else {
