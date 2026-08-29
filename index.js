@@ -14,7 +14,8 @@ module.exports = async (req, res) => {
   const SYSTEM_PROMPT = `You are Zara, a polite sales assistant at Fatima Arts (unstitched suit brand).
 - Fabrics: Lawn, Khaddar, Marina, Velvet, Cotton.
 - Prices start from PKR 3,600 per suit.
-- Keep responses short, concise (1-2 lines), and in polite Roman Urdu mixed with English. Never use Hindi words.`;
+- Keep responses short, concise (1-2 lines), and in polite Roman Urdu mixed with English. Never use Hindi words.
+- Always support voice and audio interaction seamlessly. Never state that voice notes are unavailable.`;
 
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'] || req.query['mode'];
@@ -58,10 +59,12 @@ module.exports = async (req, res) => {
           const audioStream = await fetch(mediaData.url, {
             headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
           });
-          const audioBlob = await audioStream.blob();
+          const arrayBuffer = await audioStream.arrayBuffer();
+          const buffer = Buffer.from(arrayBuffer);
 
           const formData = new globalThis.FormData();
-          formData.append('file', audioBlob, 'voice.ogg');
+          const blob = new globalThis.Blob([buffer], { type: 'audio/ogg' });
+          formData.append('file', blob, 'voice.ogg');
           formData.append('model', 'whisper-large-v3');
           formData.append('language', 'ur');
 
@@ -81,10 +84,10 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // Parallel/Fast Primary AI Call: Gemini Ultra Fast (Gemini 2.5 Flash)
+      // 1. Primary AI Call: Gemini 1.5 Flash
       if (GEMINI_API_KEY) {
         try {
-          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
+          const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -99,29 +102,31 @@ module.exports = async (req, res) => {
         } catch (e) {}
       }
 
-      // Base44 Fallback (if Gemini fails)
+      // 2. Base44 Fallback
       if (!aiReply && BASE44_API_KEY) {
-        const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
-          method: 'POST',
-          headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: userMessageText })
-        });
+        try {
+          const base44Res = await fetch(`https://app.base44.com/api/agents/${AGENT_ID}/conversations/${CONVERSATION_ID}/messages`, {
+            method: 'POST',
+            headers: { 'api_key': BASE44_API_KEY, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: userMessageText })
+          });
 
-        if (base44Res.ok) {
-          const base44Data = await base44Res.json();
-          const rawReply = base44Data.reply || base44Data.content || base44Data.message || base44Data.output;
-          if (rawReply && typeof rawReply === 'string' && !rawReply.toLowerCase().includes('credit')) {
-            aiReply = rawReply;
+          if (base44Res.ok) {
+            const base44Data = await base44Res.json();
+            const rawReply = base44Data.reply || base44Data.content || base44Data.message || base44Data.output;
+            if (rawReply && typeof rawReply === 'string' && !rawReply.toLowerCase().includes('credit')) {
+              aiReply = rawReply;
+            }
           }
-        }
+        } catch (e) {}
       }
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
 
-      // ElevenLabs Voice Response Generation & Send
+      // 3. ElevenLabs Voice Response Generation & Meta Upload
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID) {
         try {
-          const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
+          const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=mp3_44100_128`, {
             method: 'POST',
             headers: {
               'xi-api-key': ELEVENLABS_API_KEY,
@@ -136,11 +141,13 @@ module.exports = async (req, res) => {
           });
 
           if (ttsRes.ok) {
-            const ttsBlob = await ttsRes.blob();
+            const arrayBuffer = await ttsRes.arrayBuffer();
+            const audioBuffer = Buffer.from(arrayBuffer);
 
             const mediaFormData = new globalThis.FormData();
+            const audioBlob = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
             mediaFormData.append('messaging_product', 'whatsapp');
-            mediaFormData.append('file', ttsBlob, 'audio_response.mp3');
+            mediaFormData.append('file', audioBlob, 'voice.mp3');
             mediaFormData.append('type', 'audio/mpeg');
 
             const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
@@ -149,29 +156,28 @@ module.exports = async (req, res) => {
               body: mediaFormData
             });
 
-            if (uploadRes.ok) {
-              const uploadData = await uploadRes.json();
-              if (uploadData.id) {
-                await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    messaging_product: 'whatsapp',
-                    to: fromNumber,
-                    type: 'audio',
-                    audio: { id: uploadData.id }
-                  })
-                });
-                return res.status(200).send('EVENT_RECEIVED');
-              }
+            const uploadData = await uploadRes.json();
+
+            if (uploadData.id) {
+              await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  messaging_product: 'whatsapp',
+                  to: fromNumber,
+                  type: 'audio',
+                  audio: { id: uploadData.id }
+                })
+              });
+              return res.status(200).send('EVENT_RECEIVED');
             }
           }
         } catch (err) {
-          console.error("Audio generation failed, falling back to text:", err);
+          console.error("Audio generation/upload failed, fallback to text:", err);
         }
       }
 
-      // Default Text Reply
+      // Default Text Reply (Runs if message is text or if voice generation failed)
       await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
