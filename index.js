@@ -17,17 +17,27 @@ module.exports = async (req, res) => {
 - Tone polite, warm, aur short (1-2 lines) Roman Urdu mein rakhein.
 - Voice note query par hamesha short greeting aur helpful answer dein.`;
 
-  // 1. Webhook Verification (GET Request)
+  // 1. Webhook Verification (GET Request Fix)
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'] || req.query['mode'];
     const token = req.query['hub.verify_token'] || req.query['verify_token'];
     const challenge = req.query['hub.challenge'] || req.query['challenge'];
 
-    if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
+    // Meta verification challenge handling
+    if (mode && token) {
+      if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
+        console.log("WEBHOOK_VERIFIED");
+        return res.status(200).send(challenge);
+      }
+      return res.status(403).send('Verification Token Mismatch');
+    }
+
+    // Direct Challenge Pass-through Fallback
+    if (challenge) {
       return res.status(200).send(challenge);
     }
-    if (challenge) return res.status(200).send(challenge);
-    return res.status(403).send('Forbidden');
+
+    return res.status(200).send('Webhook Endpoint Active');
   }
 
   // 2. Incoming Messages Handling (POST Request)
@@ -131,11 +141,10 @@ module.exports = async (req, res) => {
 
       if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
 
-      // Step C: If Inbound was Audio, Generate & Send Voice Note Reply via ElevenLabs
+      // Step C: Generate & Send Voice Note Reply via ElevenLabs
       let voiceSentSuccess = false;
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN) {
         try {
-          // Generate Opus Audio Stream from ElevenLabs
           const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}?output_format=opus_16000`, {
             method: 'POST',
             headers: {
@@ -154,7 +163,6 @@ module.exports = async (req, res) => {
             const arrayBuffer = await ttsRes.arrayBuffer();
             const audioBuffer = Buffer.from(arrayBuffer);
 
-            // Upload Audio to Meta Graph API
             const mediaFormData = new globalThis.FormData();
             const audioBlob = new globalThis.Blob([audioBuffer], { type: 'audio/ogg' });
             mediaFormData.append('messaging_product', 'whatsapp');
@@ -170,7 +178,6 @@ module.exports = async (req, res) => {
             const uploadData = await uploadRes.json();
 
             if (uploadData.id) {
-              // Send Voice Message Payload to WhatsApp User
               const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
@@ -192,7 +199,7 @@ module.exports = async (req, res) => {
         }
       }
 
-      // Step D: Send Text Reply (If message was text OR if Voice Note upload failed)
+      // Step D: Fallback Text Reply
       if (!voiceSentSuccess && WHATSAPP_TOKEN) {
         await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
           method: 'POST',
