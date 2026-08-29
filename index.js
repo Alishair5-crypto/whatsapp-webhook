@@ -7,15 +7,15 @@ module.exports = async (req, res) => {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   const GROQ_API_KEY = process.env.GROQ_API_KEY;
   const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-  const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "Zjj2iX3aHYDcJSG4mMzk";
+  const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "9BWL2FjLHABvoXxVcR8p";
   const BASE44_AGENT_ID = process.env.BASE44_AGENT_ID;
   const BASE44_CONVERSATION_ID = process.env.BASE44_CONVERSATION_ID;
 
   const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts ki official customer support representative (unstitched suit brand, Faisalabad).
 - 1 to 9 Suits = PKR 3,600 per suit.
 - 10 or more Suits = PKR 2,999 per suit.
-- Tone polite, warm, aur short (1-2 lines) Roman Urdu mein rakhein.
-- Voice note query par hamesha short greeting aur helpful answer dein.`;
+- Tone polite, warm, aur direct concise Roman Urdu mein rakhein (1-2 short sentences maximum).
+- Dynamic behavior: Agar user ne sirf greeting (Assalam-o-Alaikum / Hi) bheja hai tabhi greeting dein. Agar user ne specific question ya variety ka poocha hai, to greeting repeat kiye bina directly product detail batayein.`;
 
   // 1. Webhook Verification (GET Request)
   if (req.method === 'GET') {
@@ -98,20 +98,28 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // --- STEP B: LLM Response Generation ---
+      // --- STEP B: LLM Response Generation (Gemini 1.5 Flash - Fixed Payload Format) ---
       if (GEMINI_API_KEY) {
         try {
           const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-              contents: [{ parts: [{ text: userMessageText }] }]
+              systemInstruction: {
+                parts: [{ text: SYSTEM_PROMPT }]
+              },
+              contents: [{
+                role: "user",
+                parts: [{ text: userMessageText }]
+              }]
             })
           });
+
           if (geminiRes.ok) {
             const geminiData = await geminiRes.json();
             aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text;
+          } else {
+            console.error("[STEP B ERROR] Gemini non-OK response:", await geminiRes.text());
           }
         } catch (e) {
           console.error("[STEP B ERROR] Gemini Exception:", e);
@@ -136,7 +144,11 @@ module.exports = async (req, res) => {
         } catch (e) {}
       }
 
-      if (!aiReply) aiReply = "Assalam-o-Alaikum! Fatima Arts mein khushamdeed. Main aap ki kya madad kar sakti hoon?";
+      // Safe Fallback
+      if (!aiReply) {
+        aiReply = "Ji Fatima Arts mein hamare paas premium unstitched suit collection available hai. Aapko kitne suits ki requirement hai?";
+      }
+
       console.log("[STEP B SUCCESS] AI Generated Reply:", aiReply);
 
       // --- STEP C: Text-To-Speech (ElevenLabs) & Send Audio ---
