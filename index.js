@@ -4,10 +4,14 @@ import { processAgentResponse } from './agentBrain.js';
 const app = express();
 app.use(express.json());
 
-// Isolated memory store per phone number
 const memoryStore = {};
 
-// 1. WhatsApp Webhook Verification (GET)
+// Root Health Check Route
+app.get('/', (req, res) => {
+  res.status(200).send('WhatsApp Webhook Server is Running Successfully!');
+});
+
+// WhatsApp Webhook Verification Endpoint (GET)
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -19,7 +23,7 @@ app.get('/webhook', (req, res) => {
   return res.sendStatus(403);
 });
 
-// 2. WhatsApp Message Handler (POST)
+// WhatsApp Message Handler Endpoint (POST)
 app.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
@@ -40,24 +44,19 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // Initialize memory specifically for this phone number
     if (!memoryStore[customerPhone]) {
       memoryStore[customerPhone] = [];
     }
 
     const chatHistory = memoryStore[customerPhone];
-
-    // Process through Agent Brain
     const agentReply = await processAgentResponse(customerPhone, messageText, chatHistory);
 
-    // Save interaction to memory (keeps last 30 entries)
     chatHistory.push({ role: "user", content: messageText });
     chatHistory.push({ role: "assistant", content: agentReply });
     if (chatHistory.length > 30) {
       chatHistory.splice(0, 2);
     }
 
-    // Check for Human Escalation Flag
     if (agentReply.includes('[ESCALATE_TO_HUMAN]')) {
       const cleanReply = agentReply.replace('[ESCALATE_TO_HUMAN]', '').trim();
       console.log(`[ESCALATION TRIGGERED] Customer ${customerPhone} requested discount.`);
@@ -68,12 +67,11 @@ app.post('/webhook', async (req, res) => {
 
     return res.sendStatus(200);
   } catch (error) {
-    console.error("Webhook Error:", error.message);
+    console.error("Webhook Execution Error:", error.message);
     return res.sendStatus(500);
   }
 });
 
-// Helper to send message via Meta Cloud API
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
   const token = process.env.WHATSAPP_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
