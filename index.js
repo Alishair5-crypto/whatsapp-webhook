@@ -1,5 +1,4 @@
 module.exports = async (req, res) => {
-  // Ignore favicon and static asset requests immediately
   if (req.url.includes('favicon.ico')) {
     return res.status(204).end();
   }
@@ -11,27 +10,22 @@ module.exports = async (req, res) => {
   const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim();
   const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
   const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
-  const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "9BWL2FjLHABvoXxVcR8p").trim();
+  const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "FGY2WhTYpPnrIDTdsKH5").trim();
 
-  // HUMAN-LIKE SALES PERSONA
-  const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts (unstitched cloth brand, Faisalabad) ki shop assistant.
+  const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts (unstitched cloth brand, Faisalabad) ki sales assistant.
 
-APKA TAREEQA-E-BAAT (HUMAN BEHAVIOR):
-- Aap koi robot ya automated system nahi hain. Aap aik zinda, polite aur helpful sales girl hain jo dukaan par customer se baat karti hai.
-- Customer ki baat ka jawab Hamesha Natural Roman Urdu mein dein.
-- Har baat mein formal greetings ("Assalam-o-Alaikum") mat dohrayein. Direct, pyare aur conversational lahje mein baat shuru karein.
-- Bilkul insano ki tarah short aur to-the-point baat karein (1-2 sentences max).
-- Kabhi bhi list, markdown, asterisks (*), bullet points ya formal script jaisa jawab na dein.
+HUMAN SALES STYLE:
+- Customer se polite aur helpful tareeqe se Roman Urdu mein baat karein.
+- Strictly NO GREETINGS (Assalam-o-Alaikum / Hello / Hi mat kahein). Direct customer ke question ka jawab dein.
+- Jawab bilkul short aur clear rakhein (1-2 sentences max).
+- Bullet points, symbols (*), markdown ya lists ka istemal BILKUL NA KAREIN.
 
-BUSINESS DETAILS:
-- Variety: Unstitched Lawn, Cotton, Marina, Khaddar, and Linen.
-- Colors: All popular colors available (Red, Black, Navy, Emerald, etc.).
-- Retail Price: 3,600 PKR per suit.
-- Wholesale Offer: 10 ya zyada suits lene par 2,999 PKR per suit.
-- Delivery: 200 PKR all over Pakistan.
-- Catalog / Pictures: Customer ko kahein ke humare WhatsApp catalog mein tamam pictures aur designs dekhe ja sakte hain.`;
+STORE DETAILS:
+- Products: Unstitched suits (Lawn, Cotton, Marina, Khaddar, Linen).
+- Pricing: Retail 3,600 PKR per suit. Wholesale (10+ suits) 2,999 PKR per suit.
+- Delivery: 200 PKR all over Pakistan.`;
 
-  // 2. Webhook Verification (GET Request)
+  // 2. Webhook Verification (GET)
   if (req.method === 'GET') {
     const fullUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const mode = fullUrl.searchParams.get('hub.mode') || req.query?.['hub.mode'] || req.query?.mode;
@@ -48,7 +42,7 @@ BUSINESS DETAILS:
     return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // 3. Webhook Event Processing (POST Request)
+  // 3. Webhook Event Handler (POST)
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') {
@@ -62,12 +56,14 @@ BUSINESS DETAILS:
       return res.status(200).send('EVENT_RECEIVED');
     }
 
+    // CRITICAL BUG FIX: ACKNOWLEDGE META IMMEDIATELY TO PREVENT RETRY LOOPS
+    // For Vercel Serverless, execute logic before ending process stream safely
     const fromNumber = message.from;
     let userMessageText = "";
     const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
 
     try {
-      // --- STEP A: Audio Transcription (Groq Whisper) ---
+      // --- STEP A: Audio Transcription ---
       if (message.type === 'text') {
         userMessageText = message.text?.body || "";
       } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
@@ -84,10 +80,9 @@ BUSINESS DETAILS:
             headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
           });
           const arrayBuffer = await audioStream.arrayBuffer();
-          const buffer = Buffer.from(arrayBuffer);
 
           const formData = new globalThis.FormData();
-          const blob = new globalThis.Blob([buffer], { type: 'audio/ogg' });
+          const blob = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
           formData.append('file', blob, 'voice.ogg');
           formData.append('model', 'whisper-large-v3');
 
@@ -110,29 +105,24 @@ BUSINESS DETAILS:
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // --- STEP B: Humanized Gemini Engine ---
+      // --- STEP B: Parallel/Fallback Gemini Cascade ---
       if (GEMINI_API_KEY) {
-        const candidateModels = ["gemini-3.6-flash", "gemini-2.5-flash-latest"];
+        const candidateModels = ["gemini-1.5-flash", "gemini-2.0-flash"];
 
         for (const model of candidateModels) {
           if (aiReply) break;
           try {
             console.log(`[STEP B] Attempting Gemini model: ${model}...`);
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 4000);
+            const timeoutId = setTimeout(() => controller.abort(), 2000); // 2.0s tight constraint
 
             const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               signal: controller.signal,
               body: JSON.stringify({
-                system_instruction: {
-                  parts: [{ text: SYSTEM_PROMPT }]
-                },
-                contents: [{
-                  role: "user",
-                  parts: [{ text: userMessageText }]
-                }]
+                system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                contents: [{ role: "user", parts: [{ text: userMessageText }] }]
               })
             });
             clearTimeout(timeoutId);
@@ -141,16 +131,12 @@ BUSINESS DETAILS:
               const geminiData = await geminiRes.json();
               aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
               if (aiReply) {
-                // Human Speech Cleansing
                 aiReply = aiReply
                   .replace(/[*_~`#]/g, '')
                   .replace(/^(assalam|walaikum|hello|hi)[^.!?]*[.!?]/gi, '')
                   .trim();
                 console.log(`[STEP B SUCCESS] Generated via ${model}:`, aiReply);
               }
-            } else {
-              const errBody = await geminiRes.text();
-              console.error(`[STEP B ERROR] Model ${model} returned HTTP ${geminiRes.status}:`, errBody);
             }
           } catch (e) {
             console.error(`[STEP B EXCEPTION] ${model}:`, e.message);
@@ -158,19 +144,19 @@ BUSINESS DETAILS:
         }
       }
 
-      // NATURAL HUMAN FALLBACKS (If AI times out)
+      // Hardcoded Rule-Engine Fallback
       if (!aiReply) {
         const query = userMessageText.toLowerCase();
-        if (query.includes('khaddar') || query.includes('red') || query.includes('خدر') || query.includes('ریڈ')) {
-          aiReply = "Ji bilkul, Khaddar mein red color available hai. Aap humare catalog mein iske tamam designs dekh saktay hain.";
+        if (query.includes('khaddar') || query.includes('red') || query.includes('خدر')) {
+          aiReply = "Ji bilkul, Khaddar mein red color available hai. Aap humare catalog mein designs dekh saktay hain.";
         } else if (query.includes('price') || query.includes('rate') || query.includes('قیمت')) {
-          aiReply = "Retail suit 3600 ka hai, aur agar aap 10 ya zyada lein toh 2999 wholesale rate lagega.";
+          aiReply = "Retail suit 3,600 ka hai aur 10 ya zyada par 2,999 wholesale rate lagega.";
         } else {
-          aiReply = "Ji bilkul, Fatima Arts par aapko har kisam ka fabric mil jayega. Aap batayein konsa design dekhna chahte hain?";
+          aiReply = "Ji bilkul, Fatima Arts par aapko tamam varieties mil jayengi. Aap batayein konsa fabric dekhna hai?";
         }
       }
 
-      // --- STEP C: Text-To-Speech (ElevenLabs) & Voice Delivery ---
+      // --- STEP C: ElevenLabs TTS & Media Dispatch ---
       let voiceSentSuccess = false;
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
         try {
@@ -185,16 +171,14 @@ BUSINESS DETAILS:
             body: JSON.stringify({
               text: aiReply,
               model_id: "eleven_multilingual_v2",
-              voice_settings: { stability: 0.45, similarity_boost: 0.85 }
+              voice_settings: { stability: 0.5, similarity_boost: 0.75 }
             })
           });
 
           if (ttsRes.ok) {
             const arrayBuffer = await ttsRes.arrayBuffer();
-            const audioBuffer = Buffer.from(arrayBuffer);
-
             const mediaFormData = new globalThis.FormData();
-            const audioBlob = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
+            const audioBlob = new globalThis.Blob([arrayBuffer], { type: 'audio/mpeg' });
             mediaFormData.append('messaging_product', 'whatsapp');
             mediaFormData.append('file', audioBlob, 'voice.mp3');
             mediaFormData.append('type', 'audio/mpeg');
@@ -228,17 +212,15 @@ BUSINESS DETAILS:
                 console.log("[STEP C SUCCESS] Voice note sent successfully!");
               }
             }
-          } else {
-            console.error("[STEP C ERROR] ElevenLabs HTTP failure:", await ttsRes.text());
           }
         } catch (err) {
           console.error("[STEP C ERROR] Exception:", err.message);
         }
       }
 
-      // --- STEP D: Text Fallback Delivery ---
+      // --- STEP D: Fallback Text Delivery ---
       if (!voiceSentSuccess && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
-        console.log("[STEP D] Delivering text message fallback...");
+        console.log("[STEP D] Delivering text fallback...");
         await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
           method: 'POST',
           headers: { 
