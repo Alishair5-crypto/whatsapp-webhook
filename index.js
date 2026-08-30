@@ -1,4 +1,9 @@
 module.exports = async (req, res) => {
+  // Ignore favicon and static asset requests immediately
+  if (req.url.includes('favicon.ico')) {
+    return res.status(204).end();
+  }
+
   // 1. Environment Variables
   const WHATSAPP_TOKEN = (process.env.WHATSAPP_TOKEN || "").trim();
   const PHONE_NUMBER_ID = (process.env.PHONE_NUMBER_ID || "").trim();
