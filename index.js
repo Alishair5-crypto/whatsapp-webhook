@@ -11,7 +11,7 @@ module.exports = async (req, res) => {
   const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
   const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "FGY2WhTYpPnrIDTdsKH5").trim();
 
-  // STAGE 1: HIGH-CONVERSION ACCURATE SALES ASSISTANT PROMPT
+  // STAGE 1: FATIMA ARTS HUMAN SALES ASSISTANT
   const SYSTEM_PROMPT = `You are Zara, a human sales representative working directly for "Fatima Arts" — a premium unstitched clothing brand based in Faisalabad, Pakistan.
 
 YOUR MISSION:
@@ -36,15 +36,19 @@ STORE KNOWLEDGE BASE (FATIMA ARTS):
 IF TRANSCRIPTION OR QUESTION IS UNCLEAR:
 If the user's message is incomplete or audio transcription seems garbled, politely ask: "Aap ki aawaz saaf nahi aayi, bara-e-karam dobara bata dein aap ko konsa fabric ya detail chahiye?"`;
 
-  // 2. Webhook Verification (GET)
+  // 2. Webhook Verification (GET) - Modern WHATWG URL Standard (Fixes DEP0169)
   if (req.method === 'GET') {
-    const fullUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const mode = fullUrl.searchParams.get('hub.mode') || req.query?.['hub.mode'] || req.query?.mode;
-    const token = fullUrl.searchParams.get('hub.verify_token') || req.query?.['hub.verify_token'] || req.query?.verify_token;
-    const challenge = fullUrl.searchParams.get('hub.challenge') || req.query?.['hub.challenge'] || req.query?.challenge;
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+    const currentUrl = new URL(req.url, `${protocol}://${host}`);
+
+    const mode = currentUrl.searchParams.get('hub.mode');
+    const token = currentUrl.searchParams.get('hub.verify_token');
+    const challenge = currentUrl.searchParams.get('hub.challenge');
 
     if (mode && token) {
       if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
+        console.log("[VERIFICATION SUCCESS] Webhook verified cleanly");
         return res.status(200).send(challenge);
       }
       return res.status(403).send('Verification Token Mismatch');
@@ -139,7 +143,6 @@ If the user's message is incomplete or audio transcription seems garbled, polite
               const geminiData = await geminiRes.json();
               aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
               if (aiReply) {
-                // Remove formatting symbols only, preserve full semantic meaning
                 aiReply = aiReply.replace(/[*_~`#]/g, '').trim();
                 console.log(`[STEP B SUCCESS] Answer generated:`, aiReply);
               }
@@ -150,7 +153,7 @@ If the user's message is incomplete or audio transcription seems garbled, polite
         }
       }
 
-      // Smart Context Fallback (Only if Gemini fails completely)
+      // Smart Fallback
       if (!aiReply) {
         aiReply = "Ji bilkul, Fatima Arts par aap ko tamam varieties mil jayengi. Aap humara catalog check kar saktay hain ya bataein konsa suit chahiye?";
       }
