@@ -6,9 +6,20 @@ app.use(express.json());
 
 const memoryStore = {};
 
-// Root Health Check Route
+// Root Health Check & Optional Webhook Catch
 app.get('/', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === process.env.VERIFY_TOKEN) {
+    return res.status(200).send(challenge);
+  }
   res.status(200).send('WhatsApp Webhook Server is Running Successfully!');
+});
+
+app.post('/', async (req, res) => {
+  return handleWhatsAppWebhook(req, res);
 });
 
 // WhatsApp Webhook Verification Endpoint (GET)
@@ -25,6 +36,11 @@ app.get('/webhook', (req, res) => {
 
 // WhatsApp Message Handler Endpoint (POST)
 app.post('/webhook', async (req, res) => {
+  return handleWhatsAppWebhook(req, res);
+});
+
+// Core Webhook Processing Function
+async function handleWhatsAppWebhook(req, res) {
   try {
     const body = req.body;
     
@@ -70,7 +86,7 @@ app.post('/webhook', async (req, res) => {
     console.error("Webhook Execution Error:", error.message);
     return res.sendStatus(500);
   }
-});
+}
 
 async function sendWhatsAppMessage(recipientPhone, textMessage) {
   const token = process.env.WHATSAPP_TOKEN;
