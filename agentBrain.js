@@ -1,10 +1,10 @@
 import OpenAI from 'openai';
 import { SYSTEM_PROMPT } from './systemPrompt.js';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 export async function processAgentResponse(customerPhone, messageText, chatHistory = []) {
   try {
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
       ...chatHistory,
@@ -20,6 +20,6 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     return response.choices[0]?.message?.content?.trim() || "Ji bilkul, main Fatima Arts se baat kar rahi hoon. Aap ki kis tarah rehnumai kar sakti hoon?";
   } catch (error) {
     console.error("Error in Agent Brain:", error.message);
-    return "Ji, main Fatima Arts se baat kar rahi hoon. Aap ki kis tarah rehnumai kar sakti hoon?";
+    return "Ji bilkul, main Fatima Arts se baat kar rahi hoon. Aap ki kis tarah rehnumai kar sakti hoon?";
   }
 }
