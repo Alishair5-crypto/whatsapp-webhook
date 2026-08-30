@@ -8,12 +8,23 @@ module.exports = async (req, res) => {
   const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
   const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "9BWL2FjLHABvoXxVcR8p").trim();
 
-  const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts ki official customer support representative (unstitched suit brand, Faisalabad).
-- 1 to 9 Suits = PKR 3,600 per suit.
-- 10 or more Suits = PKR 2,999 per suit.
-- Delivery Charges: PKR 200 all over Pakistan (including Faisalabad).
-- Available Fabrics: Lawn, Cotton, Marina, Khaddar, and Linen in various colors including Black.
-- Tone: Polite, warm, and direct Roman Urdu (1-2 short sentences maximum). Answer the user's specific question directly without repeating generic greetings.`;
+  // HUMAN-LIKE SALES PERSONA
+  const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts (unstitched cloth brand, Faisalabad) ki shop assistant.
+
+APKA TAREEQA-E-BAAT (HUMAN BEHAVIOR):
+- Aap koi robot ya automated system nahi hain. Aap aik zinda, polite aur helpful sales girl hain jo dukaan par customer se baat karti hai.
+- Customer ki baat ka jawab Hamesha Natural Roman Urdu mein dein.
+- Har baat mein formal greetings ("Assalam-o-Alaikum") mat dohrayein. Direct, pyare aur conversational lahje mein baat shuru karein.
+- Bilkul insano ki tarah short aur to-the-point baat karein (1-2 sentences max).
+- Kabhi bhi list, markdown, asterisks (*), bullet points ya formal script jaisa jawab na dein.
+
+BUSINESS DETAILS:
+- Variety: Unstitched Lawn, Cotton, Marina, Khaddar, and Linen.
+- Colors: All popular colors available (Red, Black, Navy, Emerald, etc.).
+- Retail Price: 3,600 PKR per suit.
+- Wholesale Offer: 10 ya zyada suits lene par 2,999 PKR per suit.
+- Delivery: 200 PKR all over Pakistan.
+- Catalog / Pictures: Customer ko kahein ke humare WhatsApp catalog mein tamam pictures aur designs dekhe ja sakte hain.`;
 
   // 2. Webhook Verification (GET Request)
   if (req.method === 'GET') {
@@ -42,7 +53,9 @@ module.exports = async (req, res) => {
     const entry = body?.entry?.[0];
     const message = entry?.changes?.[0]?.value?.messages?.[0];
 
-    if (!message) return res.status(200).send('EVENT_RECEIVED');
+    if (!message) {
+      return res.status(200).send('EVENT_RECEIVED');
+    }
 
     const fromNumber = message.from;
     let userMessageText = "";
@@ -92,17 +105,21 @@ module.exports = async (req, res) => {
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // --- STEP B: Multi-Model Gemini Engine (Failover Protection) ---
+      // --- STEP B: Humanized Gemini Engine ---
       if (GEMINI_API_KEY) {
-        const candidateModels = ["gemini-2.5-flash", "gemini-1.5-flash-latest", "gemini-1.5-pro-latest"];
+        const candidateModels = ["gemini-3.6-flash", "gemini-2.5-flash-latest"];
 
         for (const model of candidateModels) {
           if (aiReply) break;
           try {
             console.log(`[STEP B] Attempting Gemini model: ${model}...`);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 4000);
+
             const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
+              signal: controller.signal,
               body: JSON.stringify({
                 system_instruction: {
                   parts: [{ text: SYSTEM_PROMPT }]
@@ -113,11 +130,17 @@ module.exports = async (req, res) => {
                 }]
               })
             });
+            clearTimeout(timeoutId);
 
             if (geminiRes.ok) {
               const geminiData = await geminiRes.json();
               aiReply = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
               if (aiReply) {
+                // Human Speech Cleansing
+                aiReply = aiReply
+                  .replace(/[*_~`#]/g, '')
+                  .replace(/^(assalam|walaikum|hello|hi)[^.!?]*[.!?]/gi, '')
+                  .trim();
                 console.log(`[STEP B SUCCESS] Generated via ${model}:`, aiReply);
               }
             } else {
@@ -130,19 +153,19 @@ module.exports = async (req, res) => {
         }
       }
 
-      // Context-Aware Backup (Triggers ONLY if AI Key completely fails)
+      // NATURAL HUMAN FALLBACKS (If AI times out)
       if (!aiReply) {
         const query = userMessageText.toLowerCase();
-        if (query.includes('marina') || query.includes('khaddar') || query.includes('black') || query.includes('color') || query.includes('kapra') || query.includes('بلیک') || query.includes('مرینہ') || query.includes('خدر')) {
-          aiReply = "Walaikum Assalam! Ji Fatima Arts par Black color mein Marina aur Khaddar dono available hain. Price PKR 3,600 per suit hai aur Faisalabad mein delivery charges PKR 200 hain.";
+        if (query.includes('khaddar') || query.includes('red') || query.includes('خدر') || query.includes('ریڈ')) {
+          aiReply = "Ji bilkul, Khaddar mein red color available hai. Aap humare catalog mein iske tamam designs dekh saktay hain.";
         } else if (query.includes('price') || query.includes('rate') || query.includes('قیمت')) {
-          aiReply = "Fatima Arts par 1 se 9 suits PKR 3,600 per suit hain, 10 ya zyada par PKR 2,999 wholesale rate hai. Delivery charges PKR 200 hain.";
+          aiReply = "Retail suit 3600 ka hai, aur agar aap 10 ya zyada lein toh 2999 wholesale rate lagega.";
         } else {
-          aiReply = "Walaikum Assalam! Ji Fatima Arts mein aapko kaunsa fabric ya design dekhna hai?";
+          aiReply = "Ji bilkul, Fatima Arts par aapko har kisam ka fabric mil jayega. Aap batayein konsa design dekhna chahte hain?";
         }
       }
 
-      // --- STEP C: Text-To-Speech (ElevenLabs) & Audio Response ---
+      // --- STEP C: Text-To-Speech (ElevenLabs) & Voice Delivery ---
       let voiceSentSuccess = false;
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
         try {
@@ -157,7 +180,7 @@ module.exports = async (req, res) => {
             body: JSON.stringify({
               text: aiReply,
               model_id: "eleven_multilingual_v2",
-              voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+              voice_settings: { stability: 0.45, similarity_boost: 0.85 }
             })
           });
 
