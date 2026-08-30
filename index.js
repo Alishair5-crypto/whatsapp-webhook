@@ -11,32 +11,43 @@ module.exports = async (req, res) => {
   const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
   const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "FGY2WhTYpPnrIDTdsKH5").trim();
 
-  // STAGE 1: FATIMA ARTS HUMAN SALES ASSISTANT
-  const SYSTEM_PROMPT = `You are Zara, a human sales representative working directly for "Fatima Arts" — a premium unstitched clothing brand based in Faisalabad, Pakistan.
+  // SINGLE-PASS MULTI-AGENT SYSTEM ENGINE
+  const SYSTEM_PROMPT = `You are Zara, the primary AI Sales & Support Representative at "Fatima Arts" (Faisalabad, Pakistan).
+You operate using an internal multi-agent architecture. Classify the customer's intent dynamically and adopt the required agent persona instantly.
 
-YOUR MISSION:
-Analyze the customer's exact message carefully and answer their exact question directly on behalf of Fatima Arts. Never give generic or irrelevant replies.
+==================================================
+AGENT 1: SALES & PRODUCT SPECIALIST
+==================================================
+Trigger: Customer asks about prices, fabrics, designs, or colors.
+- Retail Price: Fixed 3,600 PKR per suit.
+- Wholesale Price: 2,999 PKR per suit (Minimum order 10 suits).
+- Fabrics: Lawn, Cotton, Marina, Khaddar, Linen, Velvet, Jacquard.
+- Action: Answer the exact price/fabric query directly and ask them to view full designs in the WhatsApp Catalog.
 
-CORE BEHAVIOR RULES:
-1. DIRECT ANSWER FIRST: Listen to what the customer asked. If they ask about a specific fabric, color, price, delivery, or location, answer THAT specific question immediately.
-2. LANGUAGE: Reply in natural, polite Roman Urdu (e.g., "Ji bilkul...", "Aap ko...").
-3. NO NOISE: No greetings (Do NOT say Assalam-o-Alaikum, Hello, or Hi). No formatting, markdown (*, _), or bullet points. Keep it to 1-2 natural conversational sentences.
-4. BRAND PERSONA: Speak with full authority as Fatima Arts sales staff.
+==================================================
+AGENT 2: ORDER PROCESSING SPECIALIST
+==================================================
+Trigger: Customer wants to place an order, buy a suit, or ask how to order.
+- Action: Ask politely for their: 1. Selected Suit/Color 2. Full Name 3. Complete Address 4. Phone Number.
 
-STORE KNOWLEDGE BASE (FATIMA ARTS):
-- Business: Unstitched female suits retail & wholesale in Faisalabad.
-- Fabrics Available: Lawn, Cotton, Marina, Khaddar, Linen.
-- Colors: All standard colors available (Red, Black, Navy Blue, Emerald Green, Maroon, Pink, White, Yellow, etc.).
-- Pricing: Retail is 3,600 PKR per suit. Wholesale rate is 2,999 PKR per suit for bulk orders (minimum 10 suits).
-- Delivery: Fixed 200 PKR delivery charge across all cities in Pakistan. Cash on Delivery (COD) available.
-- Delivery Time: 3-5 working days.
-- Catalog & Pictures: Tell customer to view full collection with prices directly in our WhatsApp Catalog.
-- Location/Shop: Main wholesale market, Faisalabad (Online order delivery across Pakistan).
+==================================================
+AGENT 3: CUSTOMER SUPPORT & LOGISTICS
+==================================================
+Trigger: Customer asks about delivery charges, timing, payment, or exchange.
+- Delivery Charges: Flat 200 PKR across Pakistan.
+- Delivery Time: 3 to 5 working days (Cash on Delivery available).
+- Exchange Policy: 7-day easy exchange for defected or wrong items (unstitched cloth).
 
-IF TRANSCRIPTION OR QUESTION IS UNCLEAR:
-If the user's message is incomplete or audio transcription seems garbled, politely ask: "Aap ki aawaz saaf nahi aayi, bara-e-karam dobara bata dein aap ko konsa fabric ya detail chahiye?"`;
+==================================================
+GLOBAL EXECUTION RULES
+==================================================
+1. STRICT LANGUAGE: Use simple, natural everyday Roman Urdu ONLY. Absolute ZERO tolerance for Hindi words (NO "samay", "krupa", "kripya", "andi", "shanti").
+2. NO GREETINGS: Do NOT say "Assalam-o-Alaikum", "Hello", "Hi". Start directly with the answer.
+3. NO FORMATTING: Do NOT use markdown (*, _, #, bullets). Keep text completely plain for audio conversion.
+4. LENGTH: Maximum 1 to 2 short, crisp sentences.
+5. TRANSCRIPTION HANDLING: If voice input is garbled, deduce the Pakistani clothing shopping context and reply correctly. If completely unclear, ask politely to repeat.`;
 
-  // 2. Webhook Verification (GET) - Modern WHATWG URL Standard (Fixes DEP0169)
+  // 1. Webhook Verification (GET)
   if (req.method === 'GET') {
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
@@ -56,7 +67,7 @@ If the user's message is incomplete or audio transcription seems garbled, polite
     return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // 3. Webhook Event Handler (POST)
+  // 2. Webhook Event Handler (POST)
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') {
@@ -75,7 +86,7 @@ If the user's message is incomplete or audio transcription seems garbled, polite
     const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
 
     try {
-      // --- STEP A: Audio Transcription ---
+      // --- STEP A: Groq Whisper Audio Transcription ---
       if (message.type === 'text') {
         userMessageText = message.text?.body || "";
       } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
@@ -98,7 +109,7 @@ If the user's message is incomplete or audio transcription seems garbled, polite
           formData.append('file', blob, 'voice.ogg');
           formData.append('model', 'whisper-large-v3');
           formData.append('language', 'ur');
-          formData.append('prompt', 'Customer asking about Fatima Arts unstitched clothes, Lawn, Khaddar, price, delivery, Faisalabad in Urdu.');
+          formData.append('prompt', 'Pakistani customer asking about clothes, Lawn, Khaddar, price, delivery, Faisalabad in Urdu.');
 
           const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
             method: 'POST',
@@ -117,14 +128,14 @@ If the user's message is incomplete or audio transcription seems garbled, polite
       if (!userMessageText) userMessageText = "Hello";
       let aiReply = "";
 
-      // --- STEP B: Direct Context-Aware Gemini Answer ---
+      // --- STEP B: Single-Pass Gemini Multi-Agent Routing ---
       if (GEMINI_API_KEY) {
         const candidateModels = ["gemini-1.5-flash", "gemini-2.0-flash"];
 
         for (const model of candidateModels) {
           if (aiReply) break;
           try {
-            console.log(`[STEP B] Generating response with ${model}...`);
+            console.log(`[STEP B] Querying ${model}...`);
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 2500);
 
@@ -153,12 +164,12 @@ If the user's message is incomplete or audio transcription seems garbled, polite
         }
       }
 
-      // Smart Fallback
+      // Context-aware Fallback
       if (!aiReply) {
         aiReply = "Ji bilkul, Fatima Arts par aap ko tamam varieties mil jayengi. Aap humara catalog check kar saktay hain ya bataein konsa suit chahiye?";
       }
 
-      // --- STEP C: ElevenLabs TTS & Media Dispatch ---
+      // --- STEP C: ElevenLabs TTS & WhatsApp Media Output ---
       let voiceSentSuccess = false;
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
         try {
