@@ -1,25 +1,32 @@
-import OpenAI from 'openai';
-import { SYSTEM_PROMPT } from './systemPrompt.js';
+import { GoogleGenAI } from '@google/genai';
 
-export async function processAgentResponse(customerPhone, messageText, chatHistory = []) {
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+export async function processAgentResponse(customerPhone, messageText, chatHistory) {
   try {
-    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    
-    const messages = [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...chatHistory,
-      { role: "user", content: messageText }
-    ];
+    // Format history for Gemini
+    const contents = chatHistory.map(msg => ({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.content }]
+    }));
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: messages,
-      temperature: 0.3,
+    // Add the current user message
+    contents.push({
+      role: 'user',
+      parts: [{ text: messageText }]
     });
 
-    return response.choices[0]?.message?.content?.trim() || "Ji bilkul, main Fatima Arts se baat kar rahi hoon. Aap ki kis tarah rehnumai kar sakti hoon?";
+    const response = await ai.models.generateContent({
+      model: 'gemini-1.5-flash',
+      contents: contents,
+      config: {
+        systemInstruction: "You are Zara, a helpful and friendly AI sales assistant. Keep your responses concise, natural, and helpful for WhatsApp users. If the customer asks for a special discount or gets angry, include the tag [ESCALATE_TO_HUMAN] in your reply."
+      }
+    });
+
+    return response.text || "Hello! How can I help you today?";
   } catch (error) {
-    console.error("Error in Agent Brain:", error.message);
-    return "Ji bilkul, main Fatima Arts se baat kar rahi hoon. Aap ki kis tarah rehnumai kar sakti hoon?";
+    console.error("Error in Gemini Agent Brain:", error.message);
+    return "Maaf kijiye, abhi hamara system busy hai. Main jald hi aapse baat karti hoon!";
   }
 }
