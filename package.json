@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.js",
   "dependencies": {
-    "express": "^4.19.2",
-    "openai": "^4.56.0"
+    "@google/genai": "^0.1.1",
+    "express": "^4.19.2"
   }
 }
