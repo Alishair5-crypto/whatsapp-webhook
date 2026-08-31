@@ -5,6 +5,7 @@
   "main": "index.js",
   "dependencies": {
     "@google/genai": "^2.18.0",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2"
   }
 }
