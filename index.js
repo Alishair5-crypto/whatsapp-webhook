@@ -1,128 +1,108 @@
 import express from 'express';
+import fetch from 'node-fetch';
 import { processAgentResponse } from './agentBrain.js';
 
 const app = express();
 app.use(express.json());
 
-const memoryStore = {};
-
-// Root Health Check & Webhook Verification
+// 1. Webhook Verification (GET) for Meta/WhatsApp setup
 app.get('/', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === (process.env.VERIFY_TOKEN || process.env.WEBHOOK_VERIFY_TOKEN)) {
-    return res.status(200).send(challenge);
+  const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "fatima_arts_secure_token";
+
+  if (mode && token === VERIFY_TOKEN) {
+    console.log("WEBHOOK_VERIFIED");
+    res.status(200).send(challenge);
+  } else {
+    res.sendStatus(403);
   }
-  return res.status(200).send('WhatsApp Webhook Server is Running Successfully!');
 });
 
+// 2. Incoming Messages & Events Handler (POST)
 app.post('/', async (req, res) => {
-  return await handleWhatsAppWebhook(req, res);
-});
-
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-
-  if (mode === 'subscribe' && token === (process.env.VERIFY_TOKEN || process.env.WEBHOOK_VERIFY_TOKEN)) {
-    return res.status(200).send(challenge);
-  }
-  return res.sendStatus(403);
-});
-
-app.post('/webhook', async (req, res) => {
-  return await handleWhatsAppWebhook(req, res);
-});
-
-async function handleWhatsAppWebhook(req, res) {
   try {
     const body = req.body;
-    const entry = body.entry?.[0];
-    const change = entry?.changes?.[0];
-    const value = change?.value;
-    const message = value?.messages?.[0];
 
-    if (!message) {
-      return res.sendStatus(200);
+    if (body.object === 'whatsapp_business_account') {
+      const entry = body.entry?.[0];
+      const change = entry?.changes?.[0];
+      const value = change?.value;
+      const messageObj = value?.messages?.[0];
+
+      if (messageObj) {
+        const customerPhone = messageObj.from;
+        const messageType = messageObj.type;
+
+        let messageText = "";
+
+        // Handle different incoming message types safely
+        if (messageType === 'text') {
+          messageText = messageObj.text.body;
+        } else if (messageType === 'audio' || messageType === 'voice') {
+          // Gracefully handle voice notes so Zara responds instead of going silent
+          messageText = "[Customer sent a voice note. Reply warmly in Roman Urdu/Urdu: 'آپی، میں ابھی آپ کی وائس نوٹ سن نہیں سکی، براہ کرم لکھ کر بتا دیں تاکہ میں آپ کی بہتر رہنمائی کر سکوں 😊']";
+        } else {
+          messageText = "[Customer sent an attachment or media file]";
+        }
+
+        console.log(`[Incoming ${messageType}] From: ${customerPhone} | Content: ${messageText}`);
+
+        // Process response through Zara's brain
+        const agentReply = await processAgentResponse(customerPhone, messageText, []);
+
+        // Send reply back via WhatsApp Cloud API
+        await sendWhatsAppMessage(customerPhone, agentReply);
+      }
+
+      return res.status(200).send('EVENT_RECEIVED');
     }
 
-    const customerPhone = message.from;
-    const messageText = message.text?.body;
-
-    if (!messageText) {
-      return res.sendStatus(200);
-    }
-
-    if (!memoryStore[customerPhone]) {
-      memoryStore[customerPhone] = [];
-    }
-
-    const chatHistory = memoryStore[customerPhone];
-    
-    // 1. Await Gemini Agent Response properly before returning anything
-    const agentReply = await processAgentResponse(customerPhone, messageText, chatHistory);
-
-    chatHistory.push({ role: "user", content: messageText });
-    chatHistory.push({ role: "assistant", content: agentReply });
-    if (chatHistory.length > 30) {
-      chatHistory.splice(0, 2);
-    }
-
-    // 2. Await WhatsApp Send completely
-    if (agentReply.includes('[ESCALATE_TO_HUMAN]')) {
-      const cleanReply = agentReply.replace('[ESCALATE_TO_HUMAN]', '').trim();
-      console.log(`[ESCALATION] Customer ${customerPhone} triggered human escalation.`);
-      await sendWhatsAppMessage(customerPhone, cleanReply);
-    } else {
-      await sendWhatsAppMessage(customerPhone, agentReply);
-    }
-
-    // 3. Send 200 OK ONLY after all outgoing requests are completely finished
-    return res.sendStatus(200);
+    res.sendStatus(404);
   } catch (error) {
-    console.error("Webhook Execution Critical Error:", error.message || error);
-    return res.sendStatus(500);
+    console.error("Error processing webhook:", error);
+    res.status(200).send('EVENT_RECEIVED'); // Always return 200 to Meta to avoid retry spam
   }
-}
+});
 
-async function sendWhatsAppMessage(recipientPhone, textMessage) {
-  const token = process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_ACCESS_TOKEN;
-  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.PHONE_NUMBER_ID;
+// Helper function to send WhatsApp messages
+async function sendWhatsAppMessage(recipientPhone, messageText) {
+  const token = process.env.WHATSAPP_TOKEN;
+  const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
   if (!token || !phoneNumberId) {
-    console.error("CRITICAL: Missing WhatsApp API credentials in environment variables.");
+    console.error("WhatsApp API credentials missing in environment variables.");
     return;
   }
 
   const url = `https://graph.facebook.com/v17.0/${phoneNumberId}/messages`;
 
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: recipientPhone,
-        type: "text",
-        text: { body: textMessage }
-      })
-    });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: recipientPhone,
+      text: { body: messageText }
+    })
+  });
 
-    const data = await response.json();
-    if (!response.ok) {
-      console.error("WhatsApp Graph API Error Response:", JSON.stringify(data));
-    } else {
-      console.log("WhatsApp message sent successfully to:", recipientPhone);
-    }
-  } catch (err) {
-    console.error("Failed to execute WhatsApp send fetch:", err.message);
+  const data = await response.json();
+  if (!response.ok) {
+    console.error("Failed to send WhatsApp message:", JSON.stringify(data));
+  } else {
+    console.log("WhatsApp message sent successfully to:", recipientPhone);
   }
 }
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
+});
 
 export default app;
