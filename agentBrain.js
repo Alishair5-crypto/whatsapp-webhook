@@ -52,6 +52,5 @@ You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ �
     }
   }
 
-  // If all models fail, return a warm brand response instead of error
   return "وعلیکم السلام! فاطمہ آرٹس میں خوش آمدید، ہمارے پاس لان اور اورجنزا کے خوبصورت ان اسٹچ سوٹس دستیاب ہیں۔ بتائیے کون سا ڈیزائن دکھاؤں؟ 😊";
 }
