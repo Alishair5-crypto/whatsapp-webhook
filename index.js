@@ -15,11 +15,11 @@ app.get('/', (req, res) => {
   if (mode === 'subscribe' && token === (process.env.VERIFY_TOKEN || process.env.WEBHOOK_VERIFY_TOKEN)) {
     return res.status(200).send(challenge);
   }
-  res.status(200).send('WhatsApp Webhook Server is Running Successfully!');
+  return res.status(200).send('WhatsApp Webhook Server is Running Successfully!');
 });
 
 app.post('/', async (req, res) => {
-  return handleWhatsAppWebhook(req, res);
+  return await handleWhatsAppWebhook(req, res);
 });
 
 app.get('/webhook', (req, res) => {
@@ -34,7 +34,7 @@ app.get('/webhook', (req, res) => {
 });
 
 app.post('/webhook', async (req, res) => {
-  return handleWhatsAppWebhook(req, res);
+  return await handleWhatsAppWebhook(req, res);
 });
 
 async function handleWhatsAppWebhook(req, res) {
@@ -61,6 +61,8 @@ async function handleWhatsAppWebhook(req, res) {
     }
 
     const chatHistory = memoryStore[customerPhone];
+    
+    // 1. Await Gemini Agent Response properly before returning anything
     const agentReply = await processAgentResponse(customerPhone, messageText, chatHistory);
 
     chatHistory.push({ role: "user", content: messageText });
@@ -69,6 +71,7 @@ async function handleWhatsAppWebhook(req, res) {
       chatHistory.splice(0, 2);
     }
 
+    // 2. Await WhatsApp Send completely
     if (agentReply.includes('[ESCALATE_TO_HUMAN]')) {
       const cleanReply = agentReply.replace('[ESCALATE_TO_HUMAN]', '').trim();
       console.log(`[ESCALATION] Customer ${customerPhone} triggered human escalation.`);
@@ -77,9 +80,10 @@ async function handleWhatsAppWebhook(req, res) {
       await sendWhatsAppMessage(customerPhone, agentReply);
     }
 
+    // 3. Send 200 OK ONLY after all outgoing requests are completely finished
     return res.sendStatus(200);
   } catch (error) {
-    console.error("Webhook Execution Error:", error.message || error);
+    console.error("Webhook Execution Critical Error:", error.message || error);
     return res.sendStatus(500);
   }
 }
@@ -89,7 +93,7 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.PHONE_NUMBER_ID;
 
   if (!token || !phoneNumberId) {
-    console.error("CRITICAL: Missing WhatsApp API credentials (WHATSAPP_TOKEN / PHONE_NUMBER_ID) in environment variables.");
+    console.error("CRITICAL: Missing WhatsApp API credentials in environment variables.");
     return;
   }
 
@@ -113,6 +117,8 @@ async function sendWhatsAppMessage(recipientPhone, textMessage) {
     const data = await response.json();
     if (!response.ok) {
       console.error("WhatsApp Graph API Error Response:", JSON.stringify(data));
+    } else {
+      console.log("WhatsApp message sent successfully to:", recipientPhone);
     }
   } catch (err) {
     console.error("Failed to execute WhatsApp send fetch:", err.message);
