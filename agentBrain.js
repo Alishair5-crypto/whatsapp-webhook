@@ -12,8 +12,8 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     ? messageText.trim() 
     : "[Customer sent a media file or empty message]";
 
-  // Updated to active supported model identifiers
-  const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash"];
+  // Using gemini-pro as the primary stable base, with flash as fallback
+  const modelsToTry = ["gemini-pro", "gemini-1.5-flash"];
 
   const systemInstructionText = `
 You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or any software.
@@ -83,12 +83,13 @@ You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ �
       if (response.ok && data.candidates?.[0]?.content?.parts?.[0]?.text) {
         return data.candidates[0].content.parts[0].text;
       } else {
-        console.warn(`[API WARNING] Model ${model} failed with status ${response.status}:`, JSON.stringify(data));
+        console.warn(`[ARCHITECTURAL WARNING] Model ${model} failed with status ${response.status}:`, JSON.stringify(data));
       }
     } catch (err) {
-      console.error(`[API EXCEPTION] Error on model ${model}:`, err.message);
+      console.error(`[ARCHITECTURAL EXCEPTION] Error on model ${model}:`, err.message);
     }
   }
 
+  // Graceful fallback if all models fail
   return "وعلیکم السلام! فاطمہ آرٹس میں خوش آمدید، ہمارے پاس خوبصورت ان اسٹچ سوٹس دستیاب ہیں۔ بتائیے کون سا ڈیزائن دکھاؤں؟ 😊";
 }
