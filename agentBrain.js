@@ -8,12 +8,10 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     return "وعلیکم السلام! فاطمہ آرٹس میں خوش آمدید، بتائیے کیا دیکھنا پسند کریں گی؟ 😊";
   }
 
-  // Ensure messageText is a safe string to prevent runtime exceptions
   const safeMessage = typeof messageText === 'string' && messageText.trim().length > 0 
     ? messageText.trim() 
     : "[Customer sent a media file or empty message]";
 
-  // Using current stable production models
   const modelsToTry = ["gemini-1.5-flash", "gemini-1.5-pro"];
 
   const systemInstructionText = `
@@ -58,7 +56,6 @@ You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ �
 
   for (const model of modelsToTry) {
     try {
-      // Using standard v1 endpoint for higher stability
       const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
 
       const contents = (chatHistory || []).map(msg => ({
