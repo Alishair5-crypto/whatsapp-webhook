@@ -13,12 +13,13 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     ? messageText.trim() 
     : "[Customer sent a media file or empty message]";
 
-  // Updated modern models supported by current Google AI endpoints
-  const modelsToTry = ["gemini-1.5-pro", "gemini-1.5-flash"];
+  // Using v1beta endpoint with stable fallback models
+  const modelsToTry = ["gemini-1.5-flash", "gemini-pro"];
 
   for (const model of modelsToTry) {
     try {
-      const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
+      // Switched from v1 to v1beta to resolve 404 model routing errors
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
       const contents = (chatHistory || []).map(msg => ({
         role: msg.role === 'user' ? 'user' : 'model',
