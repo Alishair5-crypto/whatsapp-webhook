@@ -8,7 +8,8 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     return "Walaikum Assalam! Welcome to Fatima Arts. How can I help you today? 😊";
   }
 
-  const modelsToTry = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-pro"];
+  // Updated to current stable model identifiers to fix 404 Not Found errors
+  const modelsToTry = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash"];
 
   const systemInstructionText = `
 You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or any software.
