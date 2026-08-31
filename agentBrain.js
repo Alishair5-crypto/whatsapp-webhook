@@ -1,9 +1,13 @@
-import { GoogleGenAI } from '@google/genai';
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-
 export async function processAgentResponse(customerPhone, messageText, chatHistory) {
   try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error("Missing GEMINI_API_KEY in environment variables.");
+      return "معذرت، اس وقت سسٹم میں تھوڑی مصروفیت ہے۔ میں جلد آپ سے رابطہ کرتی ہوں! 🙏";
+    }
+
+    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
     const contents = (chatHistory || []).map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',
       parts: [{ text: msg.content }]
@@ -14,7 +18,7 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
       parts: [{ text: messageText }]
     });
 
-    const systemInstruction = `
+    const systemInstructionText = `
 You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or any software.
 
 === CURRENT SCOPE ===
@@ -59,15 +63,28 @@ WHOLESALE (Shop owners, min 10 suits): PKR 2,999 per suit (10 suits = PKR 29,990
 1. JazzCash / 2. EasyPaisa / 3. COD
 `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash',
-      contents: contents,
-      config: {
-        systemInstruction: systemInstruction
-      }
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: contents,
+        system_instruction: {
+          parts: [{ text: systemInstructionText }]
+        }
+      })
     });
 
-    return response.text || "وعلیکم السلام! فاطمہ آرٹس میں خوش آمدید، بتائیے کیا دیکھنا پسند کریں گی؟ 😊";
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Gemini API REST Error:", JSON.stringify(data));
+      return "معذرت، اس وقت سسٹم میں تھوڑی مصروفیت ہے۔ میں جلد آپ سے رابطہ کرتی ہوں! 🙏";
+    }
+
+    const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    return replyText || "وعلیکم السلام! فاطمہ آرٹس میں خوش آمدید، بتائیے کیا دیکھنا پسند کریں گی؟ 😊";
   } catch (error) {
     const errorMsg = typeof error === 'object' ? JSON.stringify(error, null, 2) : error;
     console.error("Error in Zara Agent Brain:", errorMsg);
