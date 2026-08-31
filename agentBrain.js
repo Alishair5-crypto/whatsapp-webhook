@@ -13,7 +13,8 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     ? messageText.trim() 
     : "[Customer sent a media file or empty message]";
 
-  const modelsToTry = ["gemini-pro", "gemini-1.5-flash"];
+  // Updated modern models supported by current Google AI endpoints
+  const modelsToTry = ["gemini-1.5-pro", "gemini-1.5-flash"];
 
   for (const model of modelsToTry) {
     try {
