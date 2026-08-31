@@ -4,7 +4,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 export async function processAgentResponse(customerPhone, messageText, chatHistory) {
   try {
-    const contents = chatHistory.map(msg => ({
+    const contents = (chatHistory || []).map(msg => ({
       role: msg.role === 'user' ? 'user' : 'model',
       parts: [{ text: msg.content }]
     }));
@@ -52,7 +52,7 @@ WHOLESALE (Shop owners, min 10 suits): PKR 2,999 per suit (10 suits = PKR 29,990
 
 === HAGGLING & ESCALATION ===
 - 1st time: "آپی، یہ قیمت پہلے سے بہت مناسب ہے — ہمارا کپڑا دیکھ کر خود اندازہ ہو جائے گا۔ اتنی quality اس price میں کہیں نہیں ملتی 🎨"
-- 2nd time: "آپی سمجھ سکتی ہوں — لیکن ہم quality میں کبھی compromise نہیں करते। یہی ہماری پہچان ہے۔ آپ ایک بار لے کر دیکھیں، پھر خود بتائیں گی 😊"
+- 2nd time: "آپی سمجھ سکتی ہوں — لیکن ہم quality میں کبھی compromise نہیں کرتے۔ یہی ہماری پہچان ہے۔ آپ ایک بار لے کر دیکھیں، پھر خود بتائیں گی 😊"
 - 3rd time / Angry customer / Wholesale / Large Order / Payment / Exchange: include the tag [ESCALATE_TO_HUMAN] in your reply.
 
 === PAYMENT METHODS ===
@@ -60,7 +60,7 @@ WHOLESALE (Shop owners, min 10 suits): PKR 2,999 per suit (10 suits = PKR 29,990
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: 'gemini-1.5-flash',
       contents: contents,
       config: {
         systemInstruction: systemInstruction
