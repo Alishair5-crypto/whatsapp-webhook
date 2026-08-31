@@ -12,7 +12,7 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     ? messageText.trim() 
     : "[Customer sent a media file or empty message]";
 
-  // Updated to active supported model identifier
+  // Updated to active supported model identifiers
   const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash"];
 
   const systemInstructionText = `
