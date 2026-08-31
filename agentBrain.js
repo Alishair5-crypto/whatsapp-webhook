@@ -79,15 +79,14 @@ WHOLESALE (Shop owners, min 10 suits): PKR 2,999 per suit (10 suits = PKR 29,990
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Gemini API REST Error:", JSON.stringify(data));
+      console.error("Gemini API REST Error Details:", JSON.stringify(data));
       return "معذرت، اس وقت سسٹم میں تھوڑی مصروفیت ہے۔ میں جلد آپ سے رابطہ کرتی ہوں! 🙏";
     }
 
     const replyText = data.candidates?.[0]?.content?.parts?.[0]?.text;
     return replyText || "وعلیکم السلام! فاطمہ آرٹس میں خوش آمدید، بتائیے کیا دیکھنا پسند کریں گی؟ 😊";
   } catch (error) {
-    const errorMsg = typeof error === 'object' ? JSON.stringify(error, null, 2) : error;
-    console.error("Error in Zara Agent Brain:", errorMsg);
+    console.error("Error in Zara Agent Brain:", error.message || error);
     return "معذرت، اس وقت سسٹم میں تھوڑی مصروفیت ہے۔ میں جلد آپ سے رابطہ کرتی ہوں! 🙏";
   }
 }
