@@ -5,7 +5,7 @@ import { processAgentResponse } from './agentBrain.js';
 const app = express();
 app.use(express.json());
 
-// 1. Webhook Verification (GET) for Meta/WhatsApp setup
+// 1. Webhook Verification (GET) for Meta/WhatsApp setup & Browser landing
 app.get('/', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -13,12 +13,14 @@ app.get('/', (req, res) => {
 
   const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "fatima_arts_secure_token";
 
+  // Meta Webhook Verification check
   if (mode && token === VERIFY_TOKEN) {
     console.log("WEBHOOK_VERIFIED");
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
+    return res.status(200).send(challenge);
+  } 
+
+  // Friendly status response if opened directly in a browser (prevents raw 403 Forbidden)
+  return res.status(200).send("✨ Zara is active and running for Fatima Arts WhatsApp Webhook! 🌸");
 });
 
 // 2. Incoming Messages & Events Handler (POST)
@@ -60,10 +62,10 @@ app.post('/', async (req, res) => {
       return res.status(200).send('EVENT_RECEIVED');
     }
 
-    res.sendStatus(404);
+    return res.sendStatus(404);
   } catch (error) {
     console.error("Error processing webhook:", error);
-    res.status(200).send('EVENT_RECEIVED'); // Always return 200 to Meta to avoid retry spam
+    return res.status(200).send('EVENT_RECEIVED'); // Always return 200 to Meta to avoid retry spam
   }
 });
 
