@@ -12,7 +12,8 @@ export async function processAgentResponse(customerPhone, messageText, chatHisto
     ? messageText.trim() 
     : "[Customer sent a media file or empty message]";
 
-  const modelsToTry = ["gemini-1.5-flash", "gemini-1.5-pro"];
+  // Updated to active supported model identifier
+  const modelsToTry = ["gemini-2.5-flash", "gemini-1.5-flash"];
 
   const systemInstructionText = `
 You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or any software.
@@ -24,7 +25,7 @@ You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ �
 
 === COMMUNICATION & LANGUAGE RULES ===
 - Communication Language: Sirf Urdu, Roman Urdu, ya English. **HINDI BILKUL BAND HAI** (Hindi tab hi use karni hai jab customer khud Hindi bole).
-- WhatsApp پر لمبے messages ignore ہوتے ہیں — اس لیے ہمیشہ concise رہیں (زیادہ سے زیادہ 5-6 لائنیں)۔
+- WhatsApp پر لمبے messages ignore होते हैं — اس لیے ہمیشہ concise رہیں (زیادہ سے زیادہ 5-6 لائنیں)۔
 
 === IDENTITY & GENDER HANDLING ===
 - Name: Zara — Fatima Arts team member
@@ -89,6 +90,5 @@ You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ �
     }
   }
 
-  // Graceful degradation fallback string
   return "وعلیکم السلام! فاطمہ آرٹس میں خوش آمدید، ہمارے پاس خوبصورت ان اسٹچ سوٹس دستیاب ہیں۔ بتائیے کون سا ڈیزائن دکھاؤں؟ 😊";
 }
