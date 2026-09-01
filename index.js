@@ -320,7 +320,7 @@ You remember the full conversation history. Use context from earlier messages to
 
       // ── STEP B: Gemini with fallback ──────────────────────────────────
       if (GEMINI_API_KEY) {
-        const candidateModels = ["gemini-2.0-flash", "gemini-1.5-flash"];
+        const candidateModels = ["gemini-2.5-flash", "gemini-3.7-flash"];
 
         for (const model of candidateModels) {
           if (aiReply) break;
