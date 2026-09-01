@@ -320,14 +320,16 @@ You remember the full conversation history. Use context from earlier messages to
 
       // ── STEP B: Gemini with fallback ──────────────────────────────────
       if (GEMINI_API_KEY) {
-        const candidateModels = ["gemini-2.5-flash", "gemini-3.7-flash"];
+        // FIX: gemini-3.7-flash is primary (latest stable), gemini-2.5-flash is fallback
+        // FIX: timeout increased from 7s → 15s (Gemini needs more time under load)
+        const candidateModels = ["gemini-3.7-flash", "gemini-2.5-flash"];
 
         for (const model of candidateModels) {
           if (aiReply) break;
           try {
             console.log(`[STEP B] Querying ${model}...`);
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 7000);
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
 
             const geminiRes = await fetch(
               `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
