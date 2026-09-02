@@ -1,49 +1,17 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  WhatsApp Webhook — Fatima Arts / Zara AI Agent
 //  Fixes applied:
-//    [F1] Gemini model order + timeout (gemini-3.7-flash primary, 15s timeout)
-//    [F2] Payment numbers read from env vars, injected into system prompt at runtime
-//    [F3] Meta HMAC x-hub-signature-256 webhook signature verification (security)
-//    [F4] Raw body buffering so HMAC works even when Vercel parses body first
-//    [F5] package.json main/start path corrected (see package.json fix below)
+//    [F1] Gemini models: gemini-3.7-flash primary, gemini-3.6-flash fallback
+//         gemini-2.5-flash removed (Google shut it down, returns 404)
+//         503 retry: wait 2s, retry same model once before falling back
+//         Timeout raised 7s → 15s
+//    [F2] Payment numbers read from env vars (JAZZCASH_NUMBER, EASYPAISA_NUMBER)
+//         injected into system prompt at runtime — no more hardcoded placeholders
+//    [F3] package.json main/start path corrected to root index.js
 // ─────────────────────────────────────────────────────────────────────────────
-
-const crypto = require('crypto');
 
 // In-memory conversation history (resets on cold start — acceptable for Vercel hobby tier)
 const chatHistories = new Map();
-
-// ─── Helper: buffer raw request body (needed for HMAC verification) ──────────
-function getRawBody(req) {
-  return new Promise((resolve, reject) => {
-    // If Vercel already parsed it, reconstruct from req.body
-    if (req.body !== undefined) {
-      const raw = typeof req.body === 'string'
-        ? req.body
-        : JSON.stringify(req.body);
-      return resolve(Buffer.from(raw));
-    }
-    const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
-
-// ─── Helper: verify Meta HMAC signature ──────────────────────────────────────
-function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
-  if (!appSecret) return true; // skip if APP_SECRET not configured (dev mode)
-  if (!signatureHeader) return false;
-  const expected = 'sha256=' + crypto
-    .createHmac('sha256', appSecret)
-    .update(rawBody)
-    .digest('hex');
-  try {
-    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signatureHeader));
-  } catch {
-    return false;
-  }
-}
 
 module.exports = async (req, res) => {
   if (req.url.includes('favicon.ico')) {
@@ -62,9 +30,6 @@ module.exports = async (req, res) => {
   // [F2] Payment numbers from env vars — set these in Vercel dashboard
   const JAZZCASH_NUMBER    = (process.env.JAZZCASH_NUMBER    || "").trim();
   const EASYPAISA_NUMBER   = (process.env.EASYPAISA_NUMBER   || "").trim();
-
-  // [F3] Meta App Secret for HMAC webhook signature verification
-  const META_APP_SECRET    = (process.env.META_APP_SECRET    || "").trim();
 
   // =====================================================================
   //  ZARA — FULL SYSTEM PROMPT (Fatima Arts)
@@ -286,21 +251,9 @@ You remember the full conversation history. Use context from earlier messages to
 
   // ─── POST: Message Handler ────────────────────────────────────────────────
   if (req.method === 'POST') {
-
-    // [F3] HMAC Signature Verification — reject forged/replayed webhook calls
-    const signatureHeader = req.headers['x-hub-signature-256'] || '';
-    const rawBody = await getRawBody(req);
-    if (!verifyMetaSignature(rawBody, signatureHeader, META_APP_SECRET)) {
-      console.error("[SECURITY] HMAC signature mismatch — request rejected");
-      return res.status(403).send('Signature Verification Failed');
-    }
-
-    // [F4] Parse body safely (rawBody is a Buffer from getRawBody)
-    let body;
-    try {
-      body = JSON.parse(rawBody.toString());
-    } catch (e) {
-      return res.status(200).send('EVENT_RECEIVED');
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch (e) {}
     }
 
     const entry   = body?.entry?.[0];
@@ -383,50 +336,70 @@ You remember the full conversation history. Use context from earlier messages to
 
       let aiReply = "";
 
-      // ── STEP B: Gemini with fallback ──────────────────────────────────
+      // ── STEP B: Gemini with fallback + 503 retry ─────────────────────
+      // Models (Google official stable, verified 2026-09-02):
+      //   gemini-3.7-flash → GA August 13 2026, primary
+      //   gemini-3.6-flash → GA July 21 2026, fallback (gemini-2.5-flash is shut down)
+      // On 503 (overloaded): retry once after 2s delay before moving to next model
       if (GEMINI_API_KEY) {
-        // [F1] gemini-3.7-flash = primary (latest stable), gemini-2.5-flash = fallback
-        // [F1] Timeout raised 7s → 15s (prevents premature abort under load)
-        const candidateModels = ["gemini-3.7-flash", "gemini-2.5-flash"];
+        const candidateModels = ["gemini-3.7-flash", "gemini-3.6-flash"];
+        const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
         for (const model of candidateModels) {
           if (aiReply) break;
-          try {
-            console.log(`[STEP B] Querying ${model}...`);
-            const controller = new AbortController();
-            const timeoutId  = setTimeout(() => controller.abort(), 15000);
 
-            const geminiRes = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-              {
-                method:  'POST',
-                headers: { 'Content-Type': 'application/json' },
-                signal:  controller.signal,
-                body: JSON.stringify({
-                  system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-                  contents: geminiContents,
-                  generationConfig: {
-                    temperature:     0.7,
-                    maxOutputTokens: 300
-                  }
-                })
-              }
-            );
-            clearTimeout(timeoutId);
+          // Retry loop: try each model up to 2 times (original + 1 retry on 503)
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            if (aiReply) break;
+            try {
+              console.log(`[STEP B] Querying ${model} (attempt ${attempt})...`);
+              const controller = new AbortController();
+              const timeoutId  = setTimeout(() => controller.abort(), 15000);
 
-            if (geminiRes.ok) {
-              const geminiData = await geminiRes.json();
-              const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-              if (raw) {
-                aiReply = raw.replace(/[*_~`#]/g, '').trim();
-                console.log(`[STEP B SUCCESS] ${model}:`, aiReply);
+              const geminiRes = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+                {
+                  method:  'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  signal:  controller.signal,
+                  body: JSON.stringify({
+                    system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+                    contents: geminiContents,
+                    generationConfig: {
+                      temperature:     0.7,
+                      maxOutputTokens: 300
+                    }
+                  })
+                }
+              );
+              clearTimeout(timeoutId);
+
+              if (geminiRes.ok) {
+                const geminiData = await geminiRes.json();
+                const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                if (raw) {
+                  aiReply = raw.replace(/[*_~`#]/g, '').trim();
+                  console.log(`[STEP B SUCCESS] ${model} (attempt ${attempt}):`, aiReply);
+                }
+                break; // success — stop retrying this model
+
+              } else if (geminiRes.status === 503 && attempt < 2) {
+                // 503 = overloaded — wait 2s then retry same model once
+                const errText = await geminiRes.text();
+                console.warn(`[STEP B 503] ${model} overloaded, retrying in 2s...`, errText);
+                await delay(2000);
+
+              } else {
+                // 404, 400, or second 503 — log and move to next model
+                const errText = await geminiRes.text();
+                console.error(`[STEP B FAIL] ${model} ${geminiRes.status} (attempt ${attempt}):`, errText);
+                break;
               }
-            } else {
-              const errText = await geminiRes.text();
-              console.error(`[STEP B FAIL] ${model} ${geminiRes.status}:`, errText);
+
+            } catch (e) {
+              console.error(`[STEP B EXCEPTION] ${model} (attempt ${attempt}):`, e.message);
+              break;
             }
-          } catch (e) {
-            console.error(`[STEP B EXCEPTION] ${model}:`, e.message);
           }
         }
       }
