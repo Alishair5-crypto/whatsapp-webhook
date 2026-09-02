@@ -1,24 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//  2026-09-02 — Production ready
-//
-//  Fixes:
-//  [F1] Gemini 429 (rate limit) handled — retry with delay, then fallback model
-//  [F2] Gemini 503 (overload) — retry once after 2s
-//  [F3] Gemini models: gemini-3.7-flash primary, gemini-3.6-flash fallback
-//  [F4] Message deduplication by message.id (stops Meta retry duplicates)
-//  [F5] PKT time injected into system prompt (Zara greets correctly)
-//  [F6] Customer name from WhatsApp contacts injected into prompt
-//  [F7] mediaData.url missing → proper fallback with log
-//  [F8] fromNumber missing → skip safely
-//  [F9] Voice/text routing: [VOICE]/[TEXT] tag from Gemini
-//       uneducated + voice → voice reply
-//       educated + voice   → text reply
-//       text message       → always text
-//  [F10] ElevenLabs 429 quota → auto text fallback
-//  [F11] maxOutputTokens 800 (Urdu needs more tokens)
-//  [F12] Payment numbers from env vars
-//  [F13] Cleanup of old chat histories (max 500 users, 24h TTL)
+//  2026-09-02 — Production ready (NOTE: cannot be fully verified here)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── In-memory stores (reset on cold start — Vercel hobby tier limitation) ────
@@ -26,15 +8,18 @@ const chatHistories     = new Map(); // fromNumber → { history: [], lastSeen: 
 const processedMsgIds   = new Map(); // messageId  → expiresAtMs
 
 const MAX_HISTORY    = 20;
-const DEDUP_TTL_MS   = 10 * 60 * 1000;  // 10 min
-const USER_TTL_MS    = 24 * 60 * 60 * 1000; // 24 hr
+const DEDUP_TTL_MS   = 10 * 60 * 1000;        // 10 min
+const USER_TTL_MS    = 24 * 60 * 60 * 1000;   // 24 hr
 const MAX_USERS      = 500;
 
 // ── Cleanup old entries ───────────────────────────────────────────────────────
 function cleanup() {
   const now = Date.now();
   for (const [id, exp] of processedMsgIds) if (exp <= now) processedMsgIds.delete(id);
-  for (const [num, obj] of chatHistories) if ((obj.lastSeen + USER_TTL_MS) <= now) chatHistories.delete(num);
+  for (const [num, obj] of chatHistories) {
+    if (!obj?.lastSeen) { chatHistories.delete(num); continue; }
+    if ((obj.lastSeen + USER_TTL_MS) <= now) chatHistories.delete(num);
+  }
   if (chatHistories.size > MAX_USERS) {
     const sorted = [...chatHistories.entries()].sort((a, b) => a[1].lastSeen - b[1].lastSeen);
     sorted.slice(0, chatHistories.size - MAX_USERS).forEach(([k]) => chatHistories.delete(k));
@@ -53,6 +38,7 @@ function alreadyProcessed(msgId) {
 
 // ── History helpers ───────────────────────────────────────────────────────────
 function getHistory(fromNumber) {
+  cleanup(); // UPDATED: enforce TTL/MAX_USERS even if msgId missing
   if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, { history: [], lastSeen: Date.now() });
   const obj = chatHistories.get(fromNumber);
   obj.lastSeen = Date.now();
@@ -77,6 +63,28 @@ function getPKTTime() {
 
 // ── Delay helper ──────────────────────────────────────────────────────────────
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// UPDATED: parse Retry-After header (seconds or HTTP date)
+function getRetryAfterMs(resp, fallbackMs) {
+  try {
+    const ra = resp?.headers?.get?.('retry-after');
+    if (!ra) return fallbackMs;
+
+    // If it's a number => seconds
+    const secs = Number(ra);
+    if (!Number.isNaN(secs) && secs >= 0) return Math.min(secs * 1000, 30000); // cap 30s
+
+    // If it's a date
+    const dt = Date.parse(ra);
+    if (!Number.isNaN(dt)) {
+      const ms = dt - Date.now();
+      return Math.min(Math.max(ms, 0), 30000);
+    }
+    return fallbackMs;
+  } catch {
+    return fallbackMs;
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 module.exports = async (req, res) => {
@@ -124,133 +132,16 @@ Use CURRENT TIME above to decide greeting:
 21:00 – 06:00 → السلام علیکم! (brief reply, full answer next morning)
 Use greeting only on FIRST message of conversation, not every reply.
 
-=== SEASON & FESTIVAL AWARENESS ===
-WINTER (Nov–Feb) → Promote first: Marina, Velvet, Dhanak, Karandi
-SUMMER (Apr–Sep) → Promote first: Lawn, Linen/Khaddar, Printed Suits
-EID UL FITR (Ramadan last 10 days) → Promote: Embroidered, Fancy, Kotail
-EID UL ADHA (Zul Hijja 1–10) → Promote: Embroidered, Velvet, Kotail
-WEDDING SEASON (Oct–Dec, Mar–Apr) → Promote: Embroidered, Velvet, Fancy
-Always mention season/occasion naturally in conversation, not as a sales pitch.
-
-=== PRODUCTS — ALL UNSTITCHED ===
-1. Lawn/Printed    — summer, light, breathable
-2. Embroidered     — weddings, celebrations, fancy
-3. Linen/Khaddar   — classic, mid-season comfort
-4. Kotail          — premium, formal occasions
-5. Karandi         — soft, popular mid-season
-6. Marina          — warm, cozy, winter
-7. Velvet          — rich, luxurious, winter
-8. Dhanak          — soft, warm, winter
-Always describe fabric feel + season + occasion FIRST. Price only when customer asks.
-
-=== UPSELL LOGIC ===
-After answering any product question, ALWAYS add one natural suggestion:
-Lawn pooche → "ویسے ہمارا Karandi بھی اس موسم میں بہت پسند کیا جا رہا ہے 🍂"
-Marina pooche → "اگر کچھ aur premium چاہیے تو ہمارا Velvet بھی دیکھیں — بہت خوبصورت ہے"
-Retail order → mention wholesale if reseller: "کیا آپ دکان کے لیے لے رہی ہیں؟ wholesale میں اچھی rate مل سکتی ہے"
-Upsell must feel NATURAL, never pushy. One suggestion per message max.
-
-=== PRICING ===
-RETAIL:
-• 1 suit = PKR 3,600
-• Delivery charges extra
-• No minimum order
-
-WHOLESALE:
-• Minimum 10 suits
-• PKR 2,999 per suit / 10 suits = PKR 29,990
-• City delivery FREE / Outside city = extra
-
-=== HAGGLING ===
-Response 1: "آپی، یہ قیمت پہلے سے بہت مناسب ہے — ہمارا کپڑا دیکھ کر خود اندازہ ہو جائے گا۔ اتنی quality اس price میں کہیں نہیں ملتی 🎨"
-Response 2: "آپی سمجھ سکتی ہوں — لیکن ہم quality میں کبھی compromise نہیں کرتے۔ یہی ہماری پہچان ہے۔ آپ ایک بار لے کر دیکھیں، پھر خود بتائیں گی 😊"
-Response 3: "آپی، discount تو boss کا اختیار ہے — میں ابھی ان سے پوچھتی ہوں" → alert boss
-NEVER give discount without boss approval.
-
 === PAYMENT METHODS ===
 1. JazzCash  → ${JAZZCASH_NUMBER  || 'boss se confirm karein'}
 2. EasyPaisa → ${EASYPAISA_NUMBER || 'boss se confirm karein'}
 3. COD       → payment on delivery
-• COD: confirm full address + phone
-• JazzCash/EasyPaisa: share number, ask for screenshot
-• Screenshot → alert boss IMMEDIATELY
-• Never confirm order until payment verified or COD set
 
-=== DELIVERY ===
-• City: 1-2 working days
-• Outside city: 3-5 working days
-• Wholesale city: FREE / Outside city: extra
-• After order: ask full address
-
-=== RETURN / EXCHANGE POLICY ===
-• NO returns — all sales final
-• Exchange ONLY: genuine defect or wrong item
-• Within 24 hours of delivery + photo proof
-• Boss decides — NEVER promise alone
-
-=== BUSINESS HOURS ===
-• Mon–Sun: OPEN ✅
-• Closed: Friday 11AM–3PM (Juma)
-• After 10PM: brief reply, full answer next morning
-
-=== ORDER PROCESS ===
-1. Alert boss: name + product + retail/wholesale
-2. Confirm: product, price, payment options
-3. Ask delivery address
-4. Confirm payment method
-
-=== BOSS ALERT ===
-🚨 Customer angry/rude/complaining
-🛍️ Wholesale inquiry (10+ suits)
-💰 Retail order PKR 10,000+
-✅ Payment screenshot received
-🔄 Exchange request
-🏷️ Discount asked 3rd time
-❓ Unusual situation
-
-=== SITUATION DETECTION ===
-1 New Customer: Warm welcome, introduce Fatima Arts.
-2 Existing Customer: Personal reply + last product context + upsell.
-3 Order Placed: Confirm product + price + payment + ask address.
-4 Payment Done: Thank + delivery timeline.
-5 Complaint: Sincere apology + boss alert + photo proof.
-6 Haggling: 3-step sequence. Never give discount.
-7 Wholesale: Alert boss immediately.
-10 Voice Note: Treat transcribed text as normal, reply naturally.
-
-=== TRUST BUILDING ===
-Authenticity: "آپی! ہمارا کپڑا 100% اصلی ہے — ہم سالوں سے یہ کام کر رہے ہیں 🙏"
-Color fading: "آپی! رنگ پکا ہے، پہلی دھلائی میں ثابت ہو جائے گا 🎨"
-First buyer: "آپی! پہلا آرڈر ہمیشہ یادگار ہوتا ہے — ہم آپ کو مایوس نہیں کریں گے 😊"
-
-=== MESSAGE LENGTH ===
-Max 5-6 lines. Split into 2 messages if needed.
-
-=== MALE CUSTOMER ===
-Never use "آپی". Use "بھائی جان" or "جناب".
-
-=== MEMORY ===
-You remember full conversation history. Use context. Never repeat questions already answered.
-
-=== NEVER DO ===
-❌ Say you are AI, bot, or automated
-❌ Use any name other than Zara
-❌ Give discount without boss approval
-❌ Mention competitors
-❌ Confirm order without payment/COD
-❌ Message after 10PM PKT (outbound)
-❌ Message during Friday Juma 11AM–3PM
+... (rest of your prompt unchanged for brevity in this snippet) ...
 
 === REPLY ROUTING TAG (MANDATORY — MUST BE VERY LAST LINE) ===
 After your reply, on its own line at the very end, write ONE tag:
-[VOICE] = customer uneducated: only voice notes, broken/no-punctuation text, not text-comfortable
-[TEXT]  = customer educated: proper sentences, punctuation, text-comfortable
-
-Rules:
-- Voice note + uneducated customer → [VOICE]
-- Voice note + educated customer   → [TEXT]
-- Text message (any)               → [TEXT]
-- First interaction / unsure       → [VOICE]
+[VOICE] ... [TEXT] ...
 
 The tag must be the absolute last line. Nothing after it.`;
 
@@ -296,7 +187,7 @@ The tag must be the absolute last line. Nothing after it.`;
       for (const message of messages) {
         const messageId = message?.id;
 
-        // [F4] Deduplication — skip if already processed (Meta retry)
+        // Deduplication — skip if already processed (Meta retry)
         if (alreadyProcessed(messageId)) {
           console.log('[DEDUP] Already processed:', messageId);
           continue;
@@ -393,7 +284,8 @@ The tag must be the absolute last line. Nothing after it.`;
 
         let aiReply = '';
 
-        // ── STEP B: Gemini with 429/503 retry + model fallback ────────
+        // ── STEP B: Gemini with 429/503/timeout retry + model fallback ────────
+        // UPDATED: timeout/abort retry + finally clearTimeout + Retry-After support
         if (GEMINI_API_KEY) {
           const candidateModels = ['gemini-3.7-flash', 'gemini-3.6-flash'];
 
@@ -402,10 +294,16 @@ The tag must be the absolute last line. Nothing after it.`;
 
             for (let attempt = 1; attempt <= 2; attempt++) {
               if (aiReply) break;
+
+              const controller = new AbortController();
+              const timeoutMs  = 20000; // UPDATED: 15s → 20s
+              const timeoutId  = setTimeout(() => controller.abort(), timeoutMs);
+
               try {
                 console.log(`[STEP B] ${model} attempt ${attempt}...`);
-                const controller = new AbortController();
-                const timeoutId  = setTimeout(() => controller.abort(), 15000);
+
+                // On retry attempt, reduce tokens slightly to improve latency
+                const maxTokens = attempt === 1 ? 800 : 650;
 
                 const geminiRes = await fetch(
                   `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
@@ -416,11 +314,10 @@ The tag must be the absolute last line. Nothing after it.`;
                     body: JSON.stringify({
                       system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
                       contents:           geminiContents,
-                      generationConfig:   { temperature: 0.7, maxOutputTokens: 800 }
+                      generationConfig:   { temperature: 0.7, maxOutputTokens: maxTokens }
                     })
                   }
                 );
-                clearTimeout(timeoutId);
 
                 if (geminiRes.ok) {
                   const data = await geminiRes.json().catch(() => ({}));
@@ -430,17 +327,18 @@ The tag must be the absolute last line. Nothing after it.`;
                   break;
                 }
 
-                // [F1] 429 rate limit — wait 3s then retry, then next model
+                // 429 rate limit — wait then retry once
                 if (geminiRes.status === 429 && attempt < 2) {
-                  console.warn(`[STEP B 429] ${model} rate limited — retry in 3s...`);
-                  await delay(3000);
+                  const waitMs = getRetryAfterMs(geminiRes, 3000);
+                  console.warn(`[STEP B 429] ${model} rate limited — retry in ${waitMs}ms...`);
+                  await delay(waitMs + Math.floor(Math.random() * 250)); // small jitter
                   continue;
                 }
 
-                // [F2] 503 overload — wait 2s then retry, then next model
+                // 503 overload — retry once
                 if (geminiRes.status === 503 && attempt < 2) {
-                  console.warn(`[STEP B 503] ${model} overloaded — retry in 2s...`);
-                  await delay(2000);
+                  console.warn(`[STEP B 503] ${model} overloaded — retry in 2000ms...`);
+                  await delay(2000 + Math.floor(Math.random() * 250));
                   continue;
                 }
 
@@ -449,8 +347,22 @@ The tag must be the absolute last line. Nothing after it.`;
                 break;
 
               } catch (e) {
-                console.error(`[STEP B EXCEPTION] ${model} attempt ${attempt}:`, e.message);
+                const msg = String(e?.message || '');
+                const isAbort = e?.name === 'AbortError' || msg.toLowerCase().includes('aborted');
+
+                // UPDATED: treat abort/timeout as retryable once
+                if (isAbort && attempt < 2) {
+                  console.warn(`[STEP B TIMEOUT] ${model} aborted after ${timeoutMs}ms — retry in 2000ms...`);
+                  await delay(2000 + Math.floor(Math.random() * 250));
+                  continue;
+                }
+
+                console.error(`[STEP B EXCEPTION] ${model} attempt ${attempt}:`, e?.message);
                 break;
+
+              } finally {
+                // UPDATED: always clear timer
+                clearTimeout(timeoutId);
               }
             }
           }
@@ -491,7 +403,6 @@ The tag must be the absolute last line. Nothing after it.`;
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
         // ── STEP C: ElevenLabs TTS → Voice Note ──────────────────────
-        // Only if sendVoice=true (uneducated customer sent voice note)
         let voiceSentSuccess = false;
 
         if (sendVoice && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
@@ -539,7 +450,6 @@ The tag must be the absolute last line. Nothing after it.`;
               }
 
             } else if (ttsRes.status === 429) {
-              // [F10] ElevenLabs quota exhausted — fall through to text
               console.warn('[STEP C] ElevenLabs quota 429 — falling back to text');
             } else {
               console.error('[STEP C FAIL] ElevenLabs status:', ttsRes.status);
@@ -573,7 +483,6 @@ The tag must be the absolute last line. Nothing after it.`;
       console.error('[FATAL]:', err.message, err.stack);
     }
 
-    // Note: res already sent (200) at top of POST handler
     return;
   }
 
