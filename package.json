@@ -1,9 +1,13 @@
 {
   "name": "whatsapp-webhook",
   "version": "1.0.0",
-  "main": "api/index.js",
+  "description": "Fatima Arts — Zara AI Agent (WhatsApp webhook)",
+  "main": "index.js",
   "scripts": {
-    "start": "node api/index.js"
+    "start": "node index.js"
   },
-  "dependencies": {}
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
 }
