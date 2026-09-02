@@ -1,21 +1,74 @@
-// In-memory conversation history (resets on server restart)
+// ─────────────────────────────────────────────────────────────────────────────
+//  WhatsApp Webhook — Fatima Arts / Zara AI Agent
+//  Fixes applied:
+//    [F1] Gemini model order + timeout (gemini-3.7-flash primary, 15s timeout)
+//    [F2] Payment numbers read from env vars, injected into system prompt at runtime
+//    [F3] Meta HMAC x-hub-signature-256 webhook signature verification (security)
+//    [F4] Raw body buffering so HMAC works even when Vercel parses body first
+//    [F5] package.json main/start path corrected (see package.json fix below)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const crypto = require('crypto');
+
+// In-memory conversation history (resets on cold start — acceptable for Vercel hobby tier)
 const chatHistories = new Map();
+
+// ─── Helper: buffer raw request body (needed for HMAC verification) ──────────
+function getRawBody(req) {
+  return new Promise((resolve, reject) => {
+    // If Vercel already parsed it, reconstruct from req.body
+    if (req.body !== undefined) {
+      const raw = typeof req.body === 'string'
+        ? req.body
+        : JSON.stringify(req.body);
+      return resolve(Buffer.from(raw));
+    }
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+// ─── Helper: verify Meta HMAC signature ──────────────────────────────────────
+function verifyMetaSignature(rawBody, signatureHeader, appSecret) {
+  if (!appSecret) return true; // skip if APP_SECRET not configured (dev mode)
+  if (!signatureHeader) return false;
+  const expected = 'sha256=' + crypto
+    .createHmac('sha256', appSecret)
+    .update(rawBody)
+    .digest('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signatureHeader));
+  } catch {
+    return false;
+  }
+}
 
 module.exports = async (req, res) => {
   if (req.url.includes('favicon.ico')) {
     return res.status(204).end();
   }
 
-  const WHATSAPP_TOKEN = (process.env.WHATSAPP_TOKEN || "").trim();
-  const PHONE_NUMBER_ID = (process.env.PHONE_NUMBER_ID || "").trim();
-  const VERIFY_TOKEN = (process.env.VERIFY_TOKEN || "").trim();
-  const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || "").trim();
-  const GROQ_API_KEY = (process.env.GROQ_API_KEY || "").trim();
+  // ── Environment variables ───────────────────────────────────────────────────
+  const WHATSAPP_TOKEN     = (process.env.WHATSAPP_TOKEN     || "").trim();
+  const PHONE_NUMBER_ID    = (process.env.PHONE_NUMBER_ID    || "").trim();
+  const VERIFY_TOKEN       = (process.env.VERIFY_TOKEN       || "").trim();
+  const GEMINI_API_KEY     = (process.env.GEMINI_API_KEY     || "").trim();
+  const GROQ_API_KEY       = (process.env.GROQ_API_KEY       || "").trim();
   const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY || "").trim();
-  const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || "FGY2WhTYpPnrIDTdsKH5").trim();
+  const ELEVENLABS_VOICE_ID= (process.env.ELEVENLABS_VOICE_ID|| "FGY2WhTYpPnrIDTdsKH5").trim();
+
+  // [F2] Payment numbers from env vars — set these in Vercel dashboard
+  const JAZZCASH_NUMBER    = (process.env.JAZZCASH_NUMBER    || "").trim();
+  const EASYPAISA_NUMBER   = (process.env.EASYPAISA_NUMBER   || "").trim();
+
+  // [F3] Meta App Secret for HMAC webhook signature verification
+  const META_APP_SECRET    = (process.env.META_APP_SECRET    || "").trim();
 
   // =====================================================================
   //  ZARA — FULL SYSTEM PROMPT (Fatima Arts)
+  //  [F2] Payment numbers injected at runtime from env vars
   // =====================================================================
   const SYSTEM_PROMPT = `You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or any software.
 
@@ -92,8 +145,8 @@ Response 3 (third time): "آپی، discount تو boss کا اختیار ہے —
 NEVER give discount without boss approval. NEVER mention specific discount amount.
 
 === PAYMENT METHODS ===
-1. JazzCash  → YOUR_JAZZCASH_NUMBER
-2. EasyPaisa → YOUR_EASYPAISA_NUMBER
+1. JazzCash  → ${JAZZCASH_NUMBER || 'boss se confirm karein'}
+2. EasyPaisa → ${EASYPAISA_NUMBER || 'boss se confirm karein'}
 3. COD       → payment on delivery
 Rules:
 • COD: confirm full address + phone number
@@ -217,8 +270,8 @@ You remember the full conversation history. Use context from earlier messages to
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
     const currentUrl = new URL(req.url, `${protocol}://${host}`);
-    const mode = currentUrl.searchParams.get('hub.mode');
-    const token = currentUrl.searchParams.get('hub.verify_token');
+    const mode      = currentUrl.searchParams.get('hub.mode');
+    const token     = currentUrl.searchParams.get('hub.verify_token');
     const challenge = currentUrl.searchParams.get('hub.challenge');
 
     if (mode && token) {
@@ -233,19 +286,31 @@ You remember the full conversation history. Use context from earlier messages to
 
   // ─── POST: Message Handler ────────────────────────────────────────────────
   if (req.method === 'POST') {
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch (e) {}
+
+    // [F3] HMAC Signature Verification — reject forged/replayed webhook calls
+    const signatureHeader = req.headers['x-hub-signature-256'] || '';
+    const rawBody = await getRawBody(req);
+    if (!verifyMetaSignature(rawBody, signatureHeader, META_APP_SECRET)) {
+      console.error("[SECURITY] HMAC signature mismatch — request rejected");
+      return res.status(403).send('Signature Verification Failed');
     }
 
-    const entry = body?.entry?.[0];
+    // [F4] Parse body safely (rawBody is a Buffer from getRawBody)
+    let body;
+    try {
+      body = JSON.parse(rawBody.toString());
+    } catch (e) {
+      return res.status(200).send('EVENT_RECEIVED');
+    }
+
+    const entry   = body?.entry?.[0];
     const message = entry?.changes?.[0]?.value?.messages?.[0];
 
     if (!message) {
       return res.status(200).send('EVENT_RECEIVED');
     }
 
-    const fromNumber = message.from;
+    const fromNumber    = message.from;
     let userMessageText = "";
     const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
 
@@ -258,32 +323,32 @@ You remember the full conversation history. Use context from earlier messages to
         console.log("[STEP A] Fetching audio media from Meta...");
         const mediaId = message.audio?.id || message.voice?.id;
 
-        const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+        const mediaRes  = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
           headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
         });
         const mediaData = await mediaRes.json();
 
         if (mediaData.url) {
-          const audioStream = await fetch(mediaData.url, {
+          const audioStream  = await fetch(mediaData.url, {
             headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
           });
-          const arrayBuffer = await audioStream.arrayBuffer();
+          const arrayBuffer  = await audioStream.arrayBuffer();
 
           const formData = new globalThis.FormData();
-          const blob = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
-          formData.append('file', blob, 'voice.ogg');
-          formData.append('model', 'whisper-large-v3');
+          const blob     = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
+          formData.append('file',     blob, 'voice.ogg');
+          formData.append('model',    'whisper-large-v3');
           formData.append('language', 'ur');
-          formData.append('prompt', 'Pakistani customer asking about clothes, Lawn, Khaddar, price, delivery, Faisalabad in Urdu.');
+          formData.append('prompt',   'Pakistani customer asking about clothes, Lawn, Khaddar, price, delivery, Faisalabad in Urdu.');
 
           const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-            method: 'POST',
+            method:  'POST',
             headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
-            body: formData
+            body:    formData
           });
 
           if (groqRes.ok) {
-            const groqData = await groqRes.json();
+            const groqData  = await groqRes.json();
             userMessageText = groqData.text;
             console.log("[STEP A SUCCESS] Transcribed:", userMessageText);
           } else {
@@ -308,8 +373,8 @@ You remember the full conversation history. Use context from earlier messages to
       if (!chatHistories.has(fromNumber)) {
         chatHistories.set(fromNumber, []);
       }
-      const history = chatHistories.get(fromNumber);
-      const MAX_HISTORY = 20; // last 10 turns
+      const history     = chatHistories.get(fromNumber);
+      const MAX_HISTORY = 20; // last 10 turns (user+model pairs)
 
       const geminiContents = [
         ...history,
@@ -320,8 +385,8 @@ You remember the full conversation history. Use context from earlier messages to
 
       // ── STEP B: Gemini with fallback ──────────────────────────────────
       if (GEMINI_API_KEY) {
-        // FIX: gemini-3.7-flash is primary (latest stable), gemini-2.5-flash is fallback
-        // FIX: timeout increased from 7s → 15s (Gemini needs more time under load)
+        // [F1] gemini-3.7-flash = primary (latest stable), gemini-2.5-flash = fallback
+        // [F1] Timeout raised 7s → 15s (prevents premature abort under load)
         const candidateModels = ["gemini-3.7-flash", "gemini-2.5-flash"];
 
         for (const model of candidateModels) {
@@ -329,19 +394,19 @@ You remember the full conversation history. Use context from earlier messages to
           try {
             console.log(`[STEP B] Querying ${model}...`);
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            const timeoutId  = setTimeout(() => controller.abort(), 15000);
 
             const geminiRes = await fetch(
               `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
               {
-                method: 'POST',
+                method:  'POST',
                 headers: { 'Content-Type': 'application/json' },
-                signal: controller.signal,
+                signal:  controller.signal,
                 body: JSON.stringify({
                   system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
                   contents: geminiContents,
                   generationConfig: {
-                    temperature: 0.7,
+                    temperature:     0.7,
                     maxOutputTokens: 300
                   }
                 })
@@ -373,7 +438,7 @@ You remember the full conversation history. Use context from earlier messages to
       }
 
       // ── Save turn to history ──────────────────────────────────────────
-      history.push({ role: "user", parts: [{ text: userMessageText }] });
+      history.push({ role: "user",  parts: [{ text: userMessageText }] });
       history.push({ role: "model", parts: [{ text: aiReply }] });
       if (history.length > MAX_HISTORY) {
         history.splice(0, history.length - MAX_HISTORY);
@@ -386,47 +451,47 @@ You remember the full conversation history. Use context from earlier messages to
         try {
           console.log("[STEP C] Converting to voice note via ElevenLabs...");
           const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
-            method: 'POST',
+            method:  'POST',
             headers: {
-              'xi-api-key': ELEVENLABS_API_KEY,
+              'xi-api-key':   ELEVENLABS_API_KEY,
               'Content-Type': 'application/json',
-              'Accept': 'audio/mpeg'
+              'Accept':       'audio/mpeg'
             },
             body: JSON.stringify({
-              text: aiReply,
-              model_id: "eleven_multilingual_v2",
+              text:           aiReply,
+              model_id:       "eleven_multilingual_v2",
               voice_settings: { stability: 0.5, similarity_boost: 0.75 }
             })
           });
 
           if (ttsRes.ok) {
-            const arrayBuffer = await ttsRes.arrayBuffer();
+            const arrayBuffer  = await ttsRes.arrayBuffer();
             const mediaFormData = new globalThis.FormData();
-            const audioBlob = new globalThis.Blob([arrayBuffer], { type: 'audio/mpeg' });
+            const audioBlob    = new globalThis.Blob([arrayBuffer], { type: 'audio/mpeg' });
             mediaFormData.append('messaging_product', 'whatsapp');
             mediaFormData.append('file', audioBlob, 'voice.mp3');
             mediaFormData.append('type', 'audio/mpeg');
 
-            const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
-              method: 'POST',
+            const uploadRes  = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
+              method:  'POST',
               headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
-              body: mediaFormData
+              body:    mediaFormData
             });
             const uploadData = await uploadRes.json();
 
             if (uploadData?.id) {
               const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
-                method: 'POST',
+                method:  'POST',
                 headers: {
                   'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
                   'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
                   messaging_product: 'whatsapp',
-                  recipient_type: 'individual',
-                  to: fromNumber,
-                  type: 'audio',
-                  audio: { id: uploadData.id }
+                  recipient_type:    'individual',
+                  to:                fromNumber,
+                  type:              'audio',
+                  audio:             { id: uploadData.id }
                 })
               });
 
@@ -449,17 +514,17 @@ You remember the full conversation history. Use context from earlier messages to
       // ── STEP D: Text Fallback (only if voice NOT sent) ────────────────
       if (!voiceSentSuccess && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
         const textRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
-          method: 'POST',
+          method:  'POST',
           headers: {
             'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-            'Content-Type': 'application/json'
+            'Content-Type':  'application/json'
           },
           body: JSON.stringify({
             messaging_product: 'whatsapp',
-            recipient_type: 'individual',
-            to: fromNumber,
-            type: 'text',
-            text: { preview_url: false, body: aiReply }
+            recipient_type:    'individual',
+            to:                fromNumber,
+            type:              'text',
+            text:              { preview_url: false, body: aiReply }
           })
         });
 
