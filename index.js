@@ -290,9 +290,9 @@ You remember the full conversation history. Use context from earlier messages to
           const formData = new globalThis.FormData();
           const blob     = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
           formData.append('file',     blob, 'voice.ogg');
-          formData.append('model',    'whisper-large-v3');
+          formData.append('model',    'whisper-large-v3-turbo');
           formData.append('language', 'ur');
-          formData.append('prompt',   'Pakistani customer asking about clothes, Lawn, Khaddar, price, delivery, Faisalabad in Urdu.');
+          formData.append('prompt',   'فاطمہ آرٹس، زارہ، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، فیصل آباد، پاکستانی گاہک، کپڑے کی دکان');
 
           const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
             method:  'POST',
@@ -367,7 +367,7 @@ You remember the full conversation history. Use context from earlier messages to
                     contents: geminiContents,
                     generationConfig: {
                       temperature:     0.7,
-                      maxOutputTokens: 300
+                      maxOutputTokens: 800
                     }
                   })
                 }
