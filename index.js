@@ -1,11 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Neon DB)
-//  2026-09-03 — PRODUCTION READY
+//  2026-09-03 — PRODUCTION READY (OPTIMIZED)
 //
 //  MEMORY:
 //  [M1] Neon PostgreSQL persistent memory — survives Vercel cold starts
-//         Table: zara_conversations (phone_number, customer_name, history, last_seen, msg_count)
-//         Fallback: in-memory Map (if DATABASE_URL not configured)
+//       Table: zara_conversations (phone_number, customer_name, history, last_seen, msg_count)
+//       Fallback: in-memory Map (if DATABASE_URL not configured)
 //
 //  AI CHAIN (5 free providers, auto-failover):
 //  1. Gemini 3.7-flash  2. Gemini 3.6-flash
@@ -27,7 +27,7 @@
 //
 //  GOOGLE SHEETS:
 //  [G1] Auto-save orders via [ORDER:...] tag
-//  [G2] Service account JWT (no extra packages)
+//  [G2] Service account JWT with in-memory caching
 //
 //  REQUIRED ENV VARS:
 //  WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN
@@ -81,7 +81,14 @@ function maybeResetAtMidnight() {
 }
 
 // ── [M1] Neon PostgreSQL persistent memory ───────────────────────────────────
-const memCache = new Map(); // in-memory cache (fast reads, avoids repeat DB calls)
+const memCache = new Map(); // in-memory cache with size management
+function setMemCache(phone, data) {
+  if (memCache.size > 300) {
+    const firstKey = memCache.keys().next().value;
+    memCache.delete(firstKey);
+  }
+  memCache.set(phone, data);
+}
 
 async function dbGet(databaseUrl, phone) {
   if (memCache.has(phone)) return memCache.get(phone);
@@ -91,7 +98,7 @@ async function dbGet(databaseUrl, phone) {
     const rows = await sql`SELECT history, customer_name FROM zara_conversations WHERE phone_number = ${phone}`;
     if (rows?.length) {
       const data = { history: rows[0].history || [], customerName: rows[0].customer_name || '' };
-      memCache.set(phone, data);
+      setMemCache(phone, data);
       return data;
     }
     return null;
@@ -99,7 +106,7 @@ async function dbGet(databaseUrl, phone) {
 }
 
 async function dbSave(databaseUrl, phone, customerName, history) {
-  memCache.set(phone, { history, customerName });
+  setMemCache(phone, { history, customerName });
   if (!databaseUrl) return;
   try {
     const sql = neon(databaseUrl);
@@ -122,7 +129,13 @@ async function dbSave(databaseUrl, phone, customerName, history) {
 // In-memory fallback (when DATABASE_URL not configured)
 const localHistories = new Map();
 function getLocalHistory(phone) {
-  if (!localHistories.has(phone)) localHistories.set(phone, []);
+  if (!localHistories.has(phone)) {
+    if (localHistories.size > 300) {
+      const firstKey = localHistories.keys().next().value;
+      localHistories.delete(firstKey);
+    }
+    localHistories.set(phone, []);
+  }
   return localHistories.get(phone);
 }
 
@@ -137,8 +150,13 @@ const CITY_FIX = {
 };
 const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()] || w) : t;
 
-// ── Google Sheets [G1] ────────────────────────────────────────────────────────
+// ── Google Sheets [G1] & Token Caching [G2] ──────────────────────────────────
+let cachedGoogleToken = { token: null, expiresAt: 0 };
+
 async function getGoogleToken(email, key) {
+  if (cachedGoogleToken.token && Date.now() < cachedGoogleToken.expiresAt - 300000) {
+    return cachedGoogleToken.token;
+  }
   try {
     const now = Math.floor(Date.now()/1000);
     const b64 = s => Buffer.from(s).toString('base64url');
@@ -147,7 +165,15 @@ async function getGoogleToken(email, key) {
     const s   = crypto.createSign('RSA-SHA256'); s.update(`${h}.${p}`);
     const sig = s.sign(key.replace(/\\n/g,'\n'),'base64url');
     const r   = await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${h}.${p}.${sig}`});
-    return (await r.json()).access_token || null;
+    const data = await r.json();
+    if (data.access_token) {
+      cachedGoogleToken = {
+        token: data.access_token,
+        expiresAt: Date.now() + ((data.expires_in || 3600) * 1000)
+      };
+      return cachedGoogleToken.token;
+    }
+    return null;
   } catch(e) { console.error('[SHEETS TOKEN]', e.message); return null; }
 }
 
@@ -334,8 +360,8 @@ screenshot ملے → فوراً boss کو alert کریں
     let body=req.body;
     if (typeof body==='string') { try { body=JSON.parse(body); } catch(e) {} }
 
-    const entry     = body?.entry?.[0];
-    const value     = entry?.changes?.[0]?.value;
+    const entry      = body?.entry?.[0];
+    const value      = entry?.changes?.[0]?.value;
     const messages = Array.isArray(value?.messages) ? value.messages : [];
     const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
 
