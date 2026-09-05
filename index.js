@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//   BASE: Fully Audited Production Version (Max Tokens 8192 + Neon DB + Sheets)
+//   BASE: Fully Audited Production Version (Max Tokens 8192 + Neon DB + Sheets A-M)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -75,7 +75,7 @@ const CITY_FIX = {
 };
 const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()] || w) : t;
 
-// ── Google Sheets via Apps Script Web App ─────────────────────────────────────
+// ── Google Sheets via Apps Script Web App (Aligned to Columns A-M) ───────────
 async function saveToSheet(webAppUrl, order, phone) {
   if (!webAppUrl) {
     console.error('[SHEET ERROR] SHEET_WEB_APP_URL is missing in environment variables!');
@@ -83,11 +83,13 @@ async function saveToSheet(webAppUrl, order, phone) {
   }
   try {
     const payload = {
+      orderId: order.orderid || order.orderId || ('FA-' + Math.floor(100000 + Math.random() * 900000)),
       timestamp: new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' }),
       name: order.name || 'N/A',
       phone: phone || 'N/A',
       product: order.product || 'N/A',
-      qty: order.qty || '1',
+      qty: order.qty || order.quantity || '1',
+      size: order.size || 'N/A',
       price: order.price || '3600',
       payment: order.payment || 'COD',
       address: order.address || 'N/A',
@@ -168,7 +170,7 @@ CURRENT TIME (Asia/Karachi): ${getPKT()}
 - **Memory Retention:** Always remember what the customer asked in previous messages. Never ask for details already provided.
 - **Step-by-Step Order Flow:** If customer wants to order, collect missing details one by one smoothly:
   1. Product & Color confirmation
-  2. Quantity
+  2. Quantity & Size (e.g. Unstitched / 1 Piece)
   3. Full Delivery Address & City
   4. Payment Method (COD / JazzCash / EasyPaisa)
 - **Order Tag:** Only generate the \`[ORDER:...]\` tag when ALL required details are fully confirmed.
@@ -186,7 +188,7 @@ Prices: Retail 1 suit = PKR 3,600 + delivery. Wholesale min 10 suits = PKR 2,999
 - Delivery: City 1-2 days, Outside 3-5 days.
 
 If order fully confirmed, include this tag on its own line:
-[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]`;
+[ORDER:orderId=FA-584920|name=CustomerName|product=Product|qty=1|size=Unstitched|price=3600|payment=COD|address=Full Address|city=Faisalabad]`;
 
   if (req.method === 'GET') {
     const protocol = req.headers['x-forwarded-proto'] || 'https';
@@ -340,7 +342,7 @@ If order fully confirmed, include this tag on its own line:
       aiReply = fixCities(aiReply);
       if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
 
-      history.push({ role: 'user',  parts: [{ text: userMessageTest }] });
+      history.push({ role: 'user',  parts: [{ text: userMessageText }] });
       history.push({ role: 'model', parts: [{ text: aiReply }] });
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
