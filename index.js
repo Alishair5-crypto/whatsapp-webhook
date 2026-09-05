@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//   BASE: Fully Audited Production Version (Neon DB + Apps Script Sheets Integration)
+//   BASE: Fully Audited Production Version (Max Tokens 8192 + Neon DB + Sheets)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -50,9 +50,10 @@ async function dbSave(dbUrl, phone, customerName, history) {
   const sql = getSql(dbUrl); if (!sql) return;
   try {
     const trimmedHistory = history.slice(-20);
+    const historyJson = JSON.stringify(trimmedHistory);
     await sql`
       INSERT INTO zara_conversations(phone_number, customer_name, history, last_seen, msg_count) 
-      VALUES (${phone}, ${customerName || ''}, ${trimmedHistory}, NOW()::timestamptz, ${history.length}) 
+      VALUES (${phone}, ${customerName || ''}, ${historyJson}::jsonb, NOW()::timestamptz, ${history.length}) 
       ON CONFLICT(phone_number) 
       DO UPDATE SET 
         customer_name = EXCLUDED.customer_name, 
@@ -122,7 +123,7 @@ function getPKT() {
   } catch(e) { return 'PKT unavailable'; }
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function oaiChat({url,key,model,messages,maxTokens=1200,timeout=20000}) {
+async function oaiChat({url,key,model,messages,maxTokens=8192,timeout=20000}) {
   const ctrl=new AbortController(), t=setTimeout(()=>ctrl.abort(),timeout);
   try { return await fetch(`${url}/chat/completions`,{method:'POST',signal:ctrl.signal,headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature:0.7,max_tokens:maxTokens})}); }
   finally { clearTimeout(t); }
@@ -155,23 +156,22 @@ CURRENT TIME (Asia/Karachi): ${getPKT()}
 === IDENTITY & TONE ===
 - Name: Zara — Fatima Arts team member
 - Tone: Extremely warm, polite, natural Pakistani boutique sales representative style.
-- Use customer's name respectfully (e.g. bhai, sister, or name) when available.
+- Use customer's name respectfully when available.
 - Max 2 emojis per message. Keep sentences clear and complete (do not cut off mid-sentence).
 
-=== LANGUAGE & TALFUZ (STRICT) ===
-- Main Language: **Pure, natural Roman Urdu** (Pakistani cultural style). Speak fluently like a real local person in Faisalabad/Lahore.
-- Avoid robotic or awkward English phrases. Use natural conversational expressions (e.g., "G bilkul", "Ji zaroor", "Aap ko kis cheez ki samajh nahi aayi").
-- Phonetic pronunciation friendly for ElevenLabs voice notes.
+=== LANGUAGE & TALFUZ (STRICT ROMAN URDU) ===
+- Main Language: **Pure, natural Roman Urdu** only. Speak fluently like a real local person in Faisalabad/Lahore.
+- **NEVER WRITE ENGLISH SENTENCES.** Do not switch to English.
 
-=== ORDER & CONVERSATION CHAIN (CRITICAL) ===
-- **Memory Retention:** Always remember what the customer asked in previous messages (e.g., if they asked for a red marina suit earlier, maintain that exact context). Never ask for details already provided.
+=== ORDER & FABRIC ACKNOWLEDGMENT (CRITICAL) ===
+- **Mandatory Fabric Check:** Whenever the customer mentions a fabric or clothing item (e.g., marina, lawn, khaddar, suit), you MUST immediately acknowledge and confirm it in your reply. Never ignore what the customer asked or chose!
+- **Memory Retention:** Always remember what the customer asked in previous messages. Never ask for details already provided.
 - **Step-by-Step Order Flow:** If customer wants to order, collect missing details one by one smoothly:
   1. Product & Color confirmation
-  2. Quantity (kitne suits chahiye?)
-  3. Full Delivery Address & City (House #, Street, Area)
+  2. Quantity
+  3. Full Delivery Address & City
   4. Payment Method (COD / JazzCash / EasyPaisa)
-- **Active Context:** Never restart with a generic welcome greeting if an ongoing conversation or order discussion is already happening. Continue naturally.
-- **Order Tag:** Only generate the \`[ORDER:...]\` tag when ALL required details (Product, Qty, Price, Payment, Address, City) are fully confirmed.
+- **Order Tag:** Only generate the \`[ORDER:...]\` tag when ALL required details are fully confirmed.
 
 === CITY NAMES ===
 ⚠️ Faisalabad (NOT Faizabad) — always spell correctly.
@@ -302,7 +302,7 @@ If order fully confirmed, include this tag on its own line:
               const r = await fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
                 { method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
-                  body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:1200}}) }
+                  body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:8192}}) }
               );
               if (r.ok) {
                 const d   = await r.json();
@@ -323,7 +323,7 @@ If order fully confirmed, include this tag on its own line:
 
       if (!aiReply && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
         try {
-          const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages,maxTokens:1200});
+          const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages,maxTokens:8192});
           if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); }
           else if (r.status===429) blockFor('cerebras',5*60*1000);
         } catch(e) {}
@@ -340,7 +340,7 @@ If order fully confirmed, include this tag on its own line:
       aiReply = fixCities(aiReply);
       if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
 
-      history.push({ role: 'user',  parts: [{ text: userMessageText }] });
+      history.push({ role: 'user',  parts: [{ text: userMessageTest }] });
       history.push({ role: 'model', parts: [{ text: aiReply }] });
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
