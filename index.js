@@ -1,12 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//   BASE: Fully Audited & Tested Production Version
+//   BASE: Fully Audited & Tested Production Version (Direct Sync Flow)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
-
-// ── Vercel waitUntil (send 200 fast, process async) ─────────────────────────
-let waitUntilFn = null;
-try { const vf = require('@vercel/functions'); if (vf?.waitUntil) waitUntilFn = vf.waitUntil; } catch (_) {}
 
 // ── Circuit breaker — per model, in-memory ───────────────────────────────────
 if (!global._cb) global._cb = new Map();
@@ -239,7 +235,7 @@ If order confirmed, include this tag on its own line:
     return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // ─── POST: Message Handler ────────────────────────────────────────────────
+  // ─── POST: Message Handler (Sync execution to prevent Vercel killing tasks) ─
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) {} }
@@ -255,264 +251,263 @@ If order confirmed, include this tag on its own line:
       return res.status(200).send('EVENT_RECEIVED');
     }
 
-    // Send 200 to Meta immediately to prevent retry storms
-    res.status(200).send('EVENT_RECEIVED');
+    try {
+      const message = messages[0];
+      if (!message) return res.status(200).send('EVENT_RECEIVED');
 
-    const processPromise = (async () => {
-      try {
-        const message = messages[0];
-        if (!message) return;
+      const msgId = message?.id;
+      if (alreadyProcessed(msgId)) {
+        console.log('[DEDUP] Already processed:', msgId);
+        return res.status(200).send('EVENT_RECEIVED');
+      }
 
-        const msgId = message?.id;
-        if (alreadyProcessed(msgId)) {
-          console.log('[DEDUP] Already processed:', msgId);
-          return;
-        }
+      const fromNumber = message.from;
+      if (!fromNumber) { console.error('[ERROR] message.from missing'); return res.status(200).send('EVENT_RECEIVED'); }
 
-        const fromNumber = message.from;
-        if (!fromNumber) { console.error('[ERROR] message.from missing'); return; }
+      const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
+      const contact       = contacts.find(c => c?.wa_id === fromNumber) || contacts[0] || null;
+      const customerName    = (contact?.profile?.name || '').trim();
 
-        const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
-        const contact       = contacts.find(c => c?.wa_id === fromNumber) || contacts[0] || null;
-        const customerName    = (contact?.profile?.name || '').trim();
+      let userMessageText = '';
 
-        let userMessageText = '';
+      // ── STEP A: Text Extract or Groq Whisper Transcription ────────────
+      if (message.type === 'text') {
+        userMessageText = fixCities(message.text?.body || '');
 
-        // ── STEP A: Text Extract or Groq Whisper Transcription ────────────
-        if (message.type === 'text') {
-          userMessageText = fixCities(message.text?.body || '');
+      } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
+        console.log('[STEP A] Fetching audio from Meta...');
+        const mediaId = message.audio?.id || message.voice?.id;
 
-        } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
-          console.log('[STEP A] Fetching audio from Meta...');
-          const mediaId = message.audio?.id || message.voice?.id;
-
-          if (!mediaId) {
+        if (!mediaId) {
+          userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+        } else {
+          const mediaRes  = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
+          });
+          if (!mediaRes.ok) {
+            console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
             userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
           } else {
-            const mediaRes  = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
-              headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
-            });
-            if (!mediaRes.ok) {
-              console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
+            const mediaData = await mediaRes.json();
+            if (!mediaData.url) {
+              console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
               userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
             } else {
-              const mediaData = await mediaRes.json();
-              if (!mediaData.url) {
-                console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
-                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-              } else {
-                const audioStream = await fetch(mediaData.url, {
-                  headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
-                });
-                const arrayBuffer = await audioStream.arrayBuffer();
-
-                const formData = new globalThis.FormData();
-                const blob     = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
-                formData.append('file',     blob, 'voice.ogg');
-                formData.append('model',    'whisper-large-v3-turbo');
-                formData.append('language', 'ur');
-                formData.append('prompt',   'فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad (NOT Faizabad)، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک، کپڑے کی دکان');
-
-                const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-                  method:  'POST',
-                  headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
-                  body:    formData
-                });
-
-                if (groqRes.ok) {
-                  const groqData  = await groqRes.json();
-                  userMessageText = fixCities((groqData.text || '').trim());
-                  console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0, 80));
-                } else {
-                  console.error('[STEP A FAIL] Groq status:', groqRes.status);
-                  userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-                }
-              }
-            }
-          }
-        } else {
-          userMessageText = '[Customer ne kuch bheja — poochein kya chahiye]';
-        }
-
-        if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
-
-        // ── Load conversation history ─────────────────────────────────────
-        let history = [];
-        const dbData = await dbGet(DATABASE_URL, fromNumber);
-        if (dbData) {
-          history = dbData.history || [];
-        } else {
-          if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, []);
-          history = chatHistories.get(fromNumber);
-        }
-        const MAX_HISTORY = 20;
-
-        const geminiContents = [
-          ...history,
-          { role: 'user', parts: [{ text: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }] }
-        ];
-        const oaiMessages = [
-          { role: 'system', content: SYSTEM_PROMPT },
-          ...history.map(c => ({ role: c.role==='model'?'assistant':'user', content: c.parts?.[0]?.text||'' })),
-          { role: 'user', content: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }
-        ];
-
-        let aiReply = '';
-
-        // ── STEP B: AI CHAIN ──────────────────────────────────────────────
-        if (!aiReply && GEMINI_API_KEY) {
-          const models = ['gemini-3.7-flash', 'gemini-3.6-flash'];
-          for (const model of models) {
-            if (aiReply) break;
-            const cbKey = `g:${model}`;
-            if (isBlocked(cbKey)) continue;
-
-            for (let attempt = 1; attempt <= 2; attempt++) {
-              if (aiReply) break;
-              const controller = new AbortController();
-              const timeoutId  = setTimeout(() => controller.abort(), 20000);
-              try {
-                console.log(`[STEP B] Querying ${model} (attempt ${attempt})...`);
-                const r = await fetch(
-                  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
-                  { method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
-                    body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:800}}) }
-                );
-                if (r.ok) {
-                  const d   = await r.json();
-                  const raw = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-                  if (raw) aiReply = raw.replace(/[*_~`#]/g,'').trim();
-                  console.log(`[STEP B SUCCESS] ${model} (attempt ${attempt})`);
-                  break;
-                }
-                if (r.status === 429) { blockFor(cbKey, 5*60*1000); break; }
-                if (r.status === 503 && attempt < 2) { await sleep(2000); continue; }
-                break;
-              } catch(e) {
-                const isAbort = e?.name==='AbortError' || String(e?.message||'').includes('abort');
-                if (isAbort && attempt < 2) { await sleep(2000); continue; }
-                break;
-              } finally { clearTimeout(timeoutId); }
-            }
-          }
-        }
-
-        // Cerebras fallback
-        if (!aiReply && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
-          try {
-            const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages});
-            if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); }
-            else if (r.status===429) blockFor('cerebras',5*60*1000);
-          } catch(e) {}
-        }
-
-        // Groq LLM fallback
-        if (!aiReply && GROQ_API_KEY) {
-          for (const gm of ['openai/gpt-oss-120b', 'qwen/qwen3.6-27b']) {
-            if (aiReply) break;
-            const cbKey = `gr:${gm}`; if (isBlocked(cbKey)) continue;
-            try {
-              const r = await oaiChat({url:'https://api.groq.com/openai/v1',key:GROQ_API_KEY,model:gm,messages:oaiMessages});
-              if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); break; }
-              if (r.status===429) { blockFor(cbKey,5*60*1000); break; }
-            } catch(e) { break; }
-          }
-        }
-
-        if (!aiReply) {
-          aiReply = 'Thori dair mein wapas aati hoon, abhi system busy hai. Shukriya sabr ka 🙏';
-        }
-
-        const orderTag = parseOrderTag(aiReply);
-        if (orderTag) {
-          aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
-          saveToSheet(GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY, orderTag, fromNumber).catch(()=>{});
-        }
-
-        aiReply = fixCities(aiReply);
-        if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
-
-        history.push({ role: 'user',  parts: [{ text: userMessageText }] });
-        history.push({ role: 'model', parts: [{ text: aiReply }] });
-        if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-
-        chatHistories.set(fromNumber, history);
-        dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
-
-        // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note ─────────────────
-        let voiceSentSuccess = false;
-
-        if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
-          try {
-            console.log('[STEP C] Converting to voice via ElevenLabs...');
-            const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
-              method:  'POST',
-              headers: {
-                'xi-api-key':   ELEVENLABS_API_KEY,
-                'Content-Type': 'application/json',
-                'Accept':       'audio/mpeg'
-              },
-              // NOTE: language_code removed to fix 400 Bad Request error from ElevenLabs API
-              body: JSON.stringify({
-                text:           aiReply,
-                model_id:       'eleven_flash_v2_5',
-                voice_settings: {
-                  stability:        0.75,
-                  similarity_boost: 0.85
-                }
-              })
-            });
-
-            if (!ttsRes.ok) {
-              const errText = await ttsRes.text();
-              console.error(`[STEP C FAIL] ElevenLabs status: ${ttsRes.status} - ${errText}`);
-            } else {
-              const audioBuffer = await ttsRes.arrayBuffer();
-              const audioBlob   = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
+              const audioStream = await fetch(mediaData.url, {
+                headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
+              });
+              const arrayBuffer = await audioStream.arrayBuffer();
 
               const formData = new globalThis.FormData();
-              formData.append('messaging_product', 'whatsapp');
-              formData.append('recipient_type', 'individual');
-              formData.append('to', fromNumber);
-              formData.append('type', 'audio');
-              formData.append('audio', audioBlob, 'response.mp3');
+              const blob     = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
+              formData.append('file',     blob, 'voice.ogg');
+              formData.append('model',    'whisper-large-v3-turbo');
+              formData.append('language', 'ur');
+              formData.append('prompt',   'فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad (NOT Faizabad)، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک، کپڑے کی دکان');
 
-              const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+              const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
                 method:  'POST',
-                headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
+                headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
                 body:    formData
               });
 
-              if (sendVoiceRes.ok) {
-                voiceSentSuccess = true;
-                console.log('[STEP C SUCCESS] Voice note sent to WhatsApp ✓');
+              if (groqRes.ok) {
+                const groqData  = await groqRes.json();
+                userMessageText = fixCities((groqData.text || '').trim());
+                console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0, 80));
               } else {
-                const sendErr = await sendVoiceRes.text();
-                console.error('[STEP C FAIL] WhatsApp Audio Send:', sendErr);
+                console.error('[STEP A FAIL] Groq status:', groqRes.status);
+                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
               }
             }
-          } catch (e) {
-            console.error('[STEP C EXCEPTION]', e.message);
           }
         }
-
-        // Fallback to text message if voice note was not sent or customer sent text
-        if (!voiceSentSuccess) {
-          await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
-            method:  'POST',
-            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
-            body:    JSON.stringify({ messaging_product: 'whatsapp', to: fromNumber, type: 'text', text: { body: aiReply } })
-          });
-          console.log('[STEP D SUCCESS] Text message sent.');
-        }
-
-      } catch (err) {
-        console.error('[PROCESS ERROR]', err);
+      } else {
+        userMessageText = '[Customer ne kuch bheja — poochein kya chahiye]';
       }
-    })();
 
-    if (waitUntilFn) waitUntilFn(processPromise);
-    return;
+      if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
+
+      // ── Load conversation history ─────────────────────────────────────
+      let history = [];
+      const dbData = await dbGet(DATABASE_URL, fromNumber);
+      if (dbData) {
+        history = dbData.history || [];
+      } else {
+        if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, []);
+        history = chatHistories.get(fromNumber);
+      }
+      const MAX_HISTORY = 20;
+
+      const geminiContents = [
+        ...history,
+        { role: 'user', parts: [{ text: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }] }
+      ];
+      const oaiMessages = [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...history.map(c => ({ role: c.role==='model'?'assistant':'user', content: c.parts?.[0]?.text||'' })),
+        { role: 'user', content: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }
+      ];
+
+      let aiReply = '';
+
+      // ── STEP B: AI CHAIN ──────────────────────────────────────────────
+      if (!aiReply && GEMINI_API_KEY) {
+        const models = ['gemini-3.7-flash', 'gemini-3.6-flash'];
+        for (const model of models) {
+          if (aiReply) break;
+          const cbKey = `g:${model}`;
+          if (isBlocked(cbKey)) continue;
+
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            if (aiReply) break;
+            const controller = new AbortController();
+            const timeoutId  = setTimeout(() => controller.abort(), 20000);
+            try {
+              console.log(`[STEP B] Querying ${model} (attempt ${attempt})...`);
+              const r = await fetch(
+                `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+                { method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
+                  body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:800}}) }
+              );
+              if (r.ok) {
+                const d   = await r.json();
+                const raw = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                if (raw) aiReply = raw.replace(/[*_~`#]/g,'').trim();
+                console.log(`[STEP B SUCCESS] ${model} (attempt ${attempt})`);
+                break;
+              }
+              if (r.status === 429) { blockFor(cbKey, 5*60*1000); break; }
+              if (r.status === 503 && attempt < 2) { await sleep(2000); continue; }
+              break;
+            } catch(e) {
+              const isAbort = e?.name==='AbortError' || String(e?.message||'').includes('abort');
+              if (isAbort && attempt < 2) { await sleep(2000); continue; }
+              break;
+            } finally { clearTimeout(timeoutId); }
+          }
+        }
+      }
+
+      // Cerebras fallback
+      if (!aiReply && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
+        try {
+          const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages});
+          if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); }
+          else if (r.status===429) blockFor('cerebras',5*60*1000);
+        } catch(e) {}
+      }
+
+      // Groq LLM fallback
+      if (!aiReply && GROQ_API_KEY) {
+        for (const gm of ['openai/gpt-oss-120b', 'qwen/qwen3.6-27b']) {
+          if (aiReply) break;
+          const cbKey = `gr:${gm}`; if (isBlocked(cbKey)) continue;
+          try {
+            const r = await oaiChat({url:'https://api.groq.com/openai/v1',key:GROQ_API_KEY,model:gm,messages:oaiMessages});
+            if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); break; }
+            if (r.status===429) { blockFor(cbKey,5*60*1000); break; }
+          } catch(e) { break; }
+        }
+      }
+
+      if (!aiReply) {
+        aiReply = 'Thori dair mein wapas aati hoon, abhi system busy hai. Shukriya sabr ka 🙏';
+      }
+
+      const orderTag = parseOrderTag(aiReply);
+      if (orderTag) {
+        aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
+        saveToSheet(GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY, orderTag, fromNumber).catch(()=>{});
+      }
+
+      aiReply = fixCities(aiReply);
+      if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
+
+      history.push({ role: 'user',  parts: [{ text: userMessageText }] });
+      history.push({ role: 'model', parts: [{ text: aiReply }] });
+      if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+
+      chatHistories.set(fromNumber, history);
+      dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
+
+      // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note ─────────────────
+      let voiceSentSuccess = false;
+
+      if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+        try {
+          console.log('[STEP C] Converting to voice via ElevenLabs...');
+          const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
+            method:  'POST',
+            headers: {
+              'xi-api-key':   ELEVENLABS_API_KEY,
+              'Content-Type': 'application/json',
+              'Accept':       'audio/mpeg'
+            },
+            body: JSON.stringify({
+              text:           aiReply,
+              model_id:       'eleven_flash_v2_5',
+              voice_settings: {
+                stability:        0.75,
+                similarity_boost: 0.85
+              }
+            })
+          });
+
+          if (!ttsRes.ok) {
+            const errText = await ttsRes.text();
+            console.error(`[STEP C FAIL] ElevenLabs status: ${ttsRes.status} - ${errText}`);
+          } else {
+            const audioBuffer = await ttsRes.arrayBuffer();
+            const audioBlob   = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
+
+            const formData = new globalThis.FormData();
+            formData.append('messaging_product', 'whatsapp');
+            formData.append('recipient_type', 'individual');
+            formData.append('to', fromNumber);
+            formData.append('type', 'audio');
+            formData.append('audio', audioBlob, 'response.mp3');
+
+            const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+              method:  'POST',
+              headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
+              body:    formData
+            });
+
+            if (sendVoiceRes.ok) {
+              voiceSentSuccess = true;
+              console.log('[STEP C SUCCESS] Voice note sent to WhatsApp ✓');
+            } else {
+              const sendErr = await sendVoiceRes.text();
+              console.error('[STEP C FAIL] WhatsApp Audio Send:', sendErr);
+            }
+          }
+        } catch (e) {
+          console.error('[STEP C EXCEPTION]', e.message);
+        }
+      }
+
+      // Fallback to text message if voice note was not sent or customer sent text
+      if (!voiceSentSuccess) {
+        const textRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+          method:  'POST',
+          headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ messaging_product: 'whatsapp', to: fromNumber, type: 'text', text: { body: aiReply } })
+        });
+        if (textRes.ok) {
+          console.log('[STEP D SUCCESS] Text message sent ✓');
+        } else {
+          const textErr = await textRes.text();
+          console.error('[STEP D FAIL] Text send error:', textErr);
+        }
+      }
+
+    } catch (err) {
+      console.error('[PROCESS ERROR]', err);
+    }
+
+    // Response sent back to Meta successfully after processing completes
+    return res.status(200).send('EVENT_RECEIVED');
   }
 
   return res.status(200).send('Method Not Allowed');
