@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//   BASE: Fully Audited Production Version (DB JSON Fix & Token Limit Increased)
+//   BASE: Fully Audited Production Version (Neon DB + Apps Script Sheets Integration)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -50,10 +50,9 @@ async function dbSave(dbUrl, phone, customerName, history) {
   const sql = getSql(dbUrl); if (!sql) return;
   try {
     const trimmedHistory = history.slice(-20);
-    // Fixed: explicitly stringifying and casting to jsonb for PostgreSQL
     await sql`
       INSERT INTO zara_conversations(phone_number, customer_name, history, last_seen, msg_count) 
-      VALUES (${phone}, ${customerName || ''}, ${JSON.stringify(trimmedHistory)}::jsonb, NOW()::timestamptz, ${history.length}) 
+      VALUES (${phone}, ${customerName || ''}, ${trimmedHistory}, NOW()::timestamptz, ${history.length}) 
       ON CONFLICT(phone_number) 
       DO UPDATE SET 
         customer_name = EXCLUDED.customer_name, 
@@ -75,36 +74,44 @@ const CITY_FIX = {
 };
 const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()] || w) : t;
 
-// ── Google Sheets ─────────────────────────────────────────────────────────────
-let _gToken = { token:null, exp:0 };
-async function getGToken(email, key) {
-  if (_gToken.token && Date.now() < _gToken.exp-300000) return _gToken.token;
+// ── Google Sheets via Apps Script Web App ─────────────────────────────────────
+async function saveToSheet(webAppUrl, order, phone) {
+  if (!webAppUrl) {
+    console.error('[SHEET ERROR] SHEET_WEB_APP_URL is missing in environment variables!');
+    return;
+  }
   try {
-    const now=Math.floor(Date.now()/1000), b64=s=>Buffer.from(s).toString('base64url');
-    const h=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));
-    const p=b64(JSON.stringify({iss:email,scope:'https://www.googleapis.com/auth/spreadsheets',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
-    const s=crypto.createSign('RSA-SHA256'); s.update(`${h}.${p}`);
-    const sig=s.sign(key.replace(/\\n/g,'\n'),'base64url');
-    const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${h}.${p}.${sig}`});
-    const d=await r.json();
-    if (d.access_token) { _gToken={token:d.access_token,exp:Date.now()+(d.expires_in||3600)*1000}; return _gToken.token; }
-  } catch(e) { console.error('[GTOKEN]',e.message); }
-  return null;
+    const payload = {
+      timestamp: new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' }),
+      name: order.name || 'N/A',
+      phone: phone || 'N/A',
+      product: order.product || 'N/A',
+      qty: order.qty || '1',
+      price: order.price || '3600',
+      payment: order.payment || 'COD',
+      address: order.address || 'N/A',
+      city: order.city || 'Faisalabad',
+      status: 'Pending'
+    };
+
+    const response = await fetch(webAppUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    const resText = await response.text();
+    console.log('[SHEET] Order successfully saved via Web App ✓', resText);
+  } catch(e) { 
+    console.error('[SHEET EXCEPTION]:', e.message); 
+  }
 }
+
 function parseOrderTag(text) {
   const m=text.match(/\[ORDER:([^\]]+)\]/i); if(!m) return null;
   const o={};
   for(const p of m[1].split('|')){const[k,...v]=p.split('=');if(k&&v.length)o[k.trim().toLowerCase()]=v.join('=').trim();}
   return Object.keys(o).length?o:null;
-}
-async function saveToSheet(sid, email, key, order, phone) {
-  if(!sid||!email||!key) return;
-  try {
-    const tok=await getGToken(email,key); if(!tok) return;
-    const row=[new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),order.name||'',phone||'',order.product||'',order.qty||'',order.price||'',order.payment||'',order.address||'',order.city||'','Pending'];
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});
-    console.log('[SHEET] Order saved ✓');
-  } catch(e) { console.error('[SHEET]',e.message); }
 }
 
 function getPKT() {
@@ -139,11 +146,8 @@ module.exports = async (req, res) => {
   const EASYPAISA_NUMBER    = (process.env.EASYPAISA_NUMBER    || '').trim();
   const CEREBRAS_API_KEY    = (process.env.CEREBRAS_API_KEY    || '').trim();
   const DATABASE_URL        = (process.env.DATABASE_URL        || '').trim();
-  const GOOGLE_SHEETS_ID    = (process.env.GOOGLE_SHEETS_ID    || '').trim();
-  const GOOGLE_SA_EMAIL     = (process.env.GOOGLE_SA_EMAIL     || '').trim();
-  const GOOGLE_SA_KEY       = (process.env.GOOGLE_SA_KEY       || '').trim();
+  const SHEET_WEB_APP_URL   = (process.env.SHEET_WEB_APP_URL   || '').trim();
 
-  // ── Strict System Prompt with Multi-Turn Order Chain Memory & Natural Talfuz ──
   const SYSTEM_PROMPT = `You are Zara — a warm, human-speaking boutique staff member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI or automation.
 
 CURRENT TIME (Asia/Karachi): ${getPKT()}
@@ -228,7 +232,6 @@ If order fully confirmed, include this tag on its own line:
 
       let userMessageText = '';
 
-      // ── STEP A: Transcription / Text Extract ──────────────────────────
       if (message.type === 'text') {
         userMessageText = fixCities(message.text?.body || '');
       } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
@@ -263,7 +266,6 @@ If order fully confirmed, include this tag on its own line:
       }
       if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
 
-      // ── Load full conversation history from Neon DB (Fallback to Memory) ──
       let history = [];
       const dbData = await dbGet(DATABASE_URL, fromNumber);
       if (dbData && Array.isArray(dbData.history)) {
@@ -286,7 +288,6 @@ If order fully confirmed, include this tag on its own line:
 
       let aiReply = '';
 
-      // ── STEP B: AI CHAIN (Increased maxOutputTokens to prevent cutting) ────
       if (!aiReply && GEMINI_API_KEY) {
         for (const model of ['gemini-3.7-flash', 'gemini-3.6-flash']) {
           if (aiReply) break;
@@ -320,7 +321,6 @@ If order fully confirmed, include this tag on its own line:
         }
       }
 
-      // Cerebras fallback
       if (!aiReply && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
         try {
           const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages,maxTokens:1200});
@@ -334,13 +334,12 @@ If order fully confirmed, include this tag on its own line:
       const orderTag = parseOrderTag(aiReply);
       if (orderTag) {
         aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
-        saveToSheet(GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY, orderTag, fromNumber).catch(()=>{});
+        saveToSheet(SHEET_WEB_APP_URL, orderTag, fromNumber).catch(()=>{});
       }
 
       aiReply = fixCities(aiReply);
       if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
 
-      // Update history and save safely to Neon DB
       history.push({ role: 'user',  parts: [{ text: userMessageText }] });
       history.push({ role: 'model', parts: [{ text: aiReply }] });
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
@@ -348,7 +347,6 @@ If order fully confirmed, include this tag on its own line:
       chatHistories.set(fromNumber, history);
       dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
 
-      // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note (2-Step Upload) ────
       let voiceSentSuccess = false;
 
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
@@ -392,7 +390,6 @@ If order fully confirmed, include this tag on its own line:
         } catch (e) {}
       }
 
-      // Fallback to text message
       if (!voiceSentSuccess) {
         await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
           method:  'POST',
