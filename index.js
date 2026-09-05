@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//   BASE: Fully Audited & Tested Production Version (Direct Sync Flow)
+//   BASE: Fully Audited & Tested Production Version (Media Upload Fixed)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -235,7 +235,7 @@ If order confirmed, include this tag on its own line:
     return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // ─── POST: Message Handler (Sync execution to prevent Vercel killing tasks) ─
+  // ─── POST: Message Handler (Sync execution) ──────────────────────────────
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) {} }
@@ -431,7 +431,7 @@ If order confirmed, include this tag on its own line:
       chatHistories.set(fromNumber, history);
       dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
 
-      // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note ─────────────────
+      // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note (FIXED 2-STEP UPLOAD) ─
       let voiceSentSuccess = false;
 
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
@@ -461,25 +461,54 @@ If order confirmed, include this tag on its own line:
             const audioBuffer = await ttsRes.arrayBuffer();
             const audioBlob   = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
 
-            const formData = new globalThis.FormData();
-            formData.append('messaging_product', 'whatsapp');
-            formData.append('recipient_type', 'individual');
-            formData.append('to', fromNumber);
-            formData.append('type', 'audio');
-            formData.append('audio', audioBlob, 'response.mp3');
+            // STEP 1: Upload audio to WhatsApp Media Endpoint to get media_id
+            const mediaFormData = new globalThis.FormData();
+            mediaFormData.append('messaging_product', 'whatsapp');
+            mediaFormData.append('file', audioBlob, 'response.mp3');
+            mediaFormData.append('type', 'audio/mpeg');
 
-            const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+            console.log('[STEP C] Uploading audio to WhatsApp Media endpoint...');
+            const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
               method:  'POST',
               headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
-              body:    formData
+              body:    mediaFormData
             });
 
-            if (sendVoiceRes.ok) {
-              voiceSentSuccess = true;
-              console.log('[STEP C SUCCESS] Voice note sent to WhatsApp ✓');
+            if (!uploadRes.ok) {
+              const uploadErr = await uploadRes.text();
+              console.error('[STEP C FAIL] WhatsApp Media Upload:', uploadErr);
             } else {
-              const sendErr = await sendVoiceRes.text();
-              console.error('[STEP C FAIL] WhatsApp Audio Send:', sendErr);
+              const uploadData = await uploadRes.json();
+              const mediaId = uploadData?.id;
+
+              if (!mediaId) {
+                console.error('[STEP C FAIL] Media ID not returned:', JSON.stringify(uploadData));
+              } else {
+                // STEP 2: Send message using media ID JSON object
+                console.log('[STEP C] Sending audio message with media ID:', mediaId);
+                const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+                  method:  'POST',
+                  headers: { 
+                    'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
+                    'Content-Type': 'application/json'
+                  },
+                  body:    JSON.stringify({
+                    messaging_product: 'whatsapp',
+                    recipient_type: 'individual',
+                    to: fromNumber,
+                    type: 'audio',
+                    audio: { id: mediaId }
+                  })
+                });
+
+                if (sendVoiceRes.ok) {
+                  voiceSentSuccess = true;
+                  console.log('[STEP C SUCCESS] Voice note sent to WhatsApp ✓');
+                } else {
+                  const sendErr = await sendVoiceRes.text();
+                  console.error('[STEP C FAIL] WhatsApp Audio Send:', sendErr);
+                }
+              }
             }
           }
         } catch (e) {
@@ -506,7 +535,6 @@ If order confirmed, include this tag on its own line:
       console.error('[PROCESS ERROR]', err);
     }
 
-    // Response sent back to Meta successfully after processing completes
     return res.status(200).send('EVENT_RECEIVED');
   }
 
