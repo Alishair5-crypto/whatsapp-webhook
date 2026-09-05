@@ -1,282 +1,113 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//  2026-09-03 — FULLY GROUNDED PRODUCTION BUILD
+//  BASE: commit 8a9f7aa (voice working) + proven fixes only
 //
-//  GROUNDING SYSTEM (AI ko guess nahi karne deta):
-//  [GR1] Product Catalog — JSON inventory, AI guess نہیں کرے گی
-//  [GR2] Pricing Guard  — code se price validate, AI calculate نہیں کر سکتی
-//  [GR3] Order State Machine — Browsing→Selected→Address→Payment→Confirmed
-//  [GR4] COD Verification — fake orders روکنے کے لیے, 3-step confirm
-//  [GR5] Stock Check — out of stock → clear message, no guessing
-//  [GR6] Address Validator — incomplete address → order block
-//  [GR7] System Prompt Grounding — hard rules, catalog injected
+//  FIXES APPLIED ON TOP OF WORKING BASE:
+//  [F1] Deduplication by message.id — stops Meta retry duplicate messages
+//  [F2] Send 200 to Meta immediately — prevents retry storm
+//  [F3] Gemini 429 circuit breaker — skips rate-limited model for 5 min
+//  [F4] Gemini timeout raised 15s → 20s + abort retry once
+//  [F5] Groq LLM fallback (correct 2026 models, no llama-3.3-70b-versatile)
+//  [F6] Cerebras llama-3.3-70b fallback (optional, free, 2100 tok/s)
+//  [F7] OpenRouter mistral:free fallback (optional)
+//  [F8] Midnight PKT reset — clears circuit breakers when daily quota refills
+//  [F9] City name correction — Faizabad→Faisalabad (Whisper STT error fix)
+//  [F10] Whisper prompt improved — explicit Faisalabad mention
+//  [F11] ElevenLabs Flash v2.5 + language_code:ur — better Urdu voice quality
+//  [F12] PKT time injected into system prompt — correct time-based greetings
+//  [F13] Google Sheets order save via [ORDER:...] tag (optional)
+//  [F14] Neon DB persistent memory (optional, fallback to in-memory)
+//  [F15] fromNumber validation — skip if missing
+//  [F16] mediaData.url missing → proper fallback with log (was silent before)
+//  [F17] ElevenLabs 429 → clean text fallback (was crashing before)
 //
-//  MEMORY:
-//  [M1] Supabase persistent memory (survives cold starts)
-//       Tables: zara_conversations, zara_orders
-//  [M2] In-memory Map fallback (if Supabase not configured)
-//
-//  AI CHAIN (5 free providers, auto-failover):
-//  1. Gemini 3.7-flash  2. Gemini 3.6-flash
-//  3. Cerebras llama-3.3-70b  4. Groq openai/gpt-oss-120b
-//  5. OpenRouter mistral-7b:free
-//
-//  SELF-HEAL:
-//  [H1] Circuit breaker per model (429/503/timeout → 5 min block)
-//  [H2] Force-reset if ALL models blocked
-//  [H3] Midnight PKT reset (daily quota refill)
-//
-//  QUALITY:
-//  [U1] ElevenLabs Flash v2.5 + Urdu language_code
-//  [U2] City name correction (Faizabad→Faisalabad etc.)
-//
-//  RECOMMENDED ADDITIONS (smooth flow):
-//  [R1] Auto Order ID (FA-YYYYMMDD-NNNN)
-//  [R2] Wholesale auto-detect (10+ suits → wholesale rate)
-//  [R3] Rate limit per customer (max 30 msg/min, prevents spam)
-//  [R4] Order tag validation (price/product mismatch → reject)
+//  VOICE LOGIC (same as working base — NOT changed):
+//  Customer sends voice → Groq STT → Gemini → ElevenLabs → WhatsApp voice note
+//  ElevenLabs fails/429 → text fallback
+//  Customer sends text → Gemini → text reply (no voice)
 //
 //  REQUIRED ENV VARS:
 //  WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN
 //  GEMINI_API_KEY, GROQ_API_KEY, ELEVENLABS_API_KEY
 //  JAZZCASH_NUMBER, EASYPAISA_NUMBER
-//  SUPABASE_URL, SUPABASE_KEY
-//  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY
-//  OPTIONAL: CEREBRAS_API_KEY, OPENROUTER_API_KEY, ELEVENLABS_VOICE_ID
+//
+//  OPTIONAL ENV VARS (adds more features):
+//  ELEVENLABS_VOICE_ID  — default: 21m00Tcm4TlvDq8ikWAM (Rachel free)
+//  CEREBRAS_API_KEY     — extra AI fallback (free)
+//  OPENROUTER_API_KEY   — extra AI fallback (free)
+//  DATABASE_URL         — Neon PostgreSQL for persistent memory
+//  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY — order saving
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
-// ════════════════════════════════════════════════════════════════════════════
-// [GR1] PRODUCT CATALOG — single source of truth
-// Update inStock: false to mark out of stock (no code change needed)
-// ════════════════════════════════════════════════════════════════════════════
-const CATALOG = {
-  lawn:        { name:'Lawn/Printed',  nameUr:'لان/پرنٹڈ',   season:'summer',     price:3600, wholesale:2999, inStock:true,  desc:'گرمیوں کا ہلکا، سانس لینے والا اور خوبصورت کپڑا' },
-  embroidered: { name:'Embroidered',   nameUr:'ایمبرائیڈرڈ', season:'all-season', price:3600, wholesale:2999, inStock:true,  desc:'شادیوں اور خاص مواقع کے لیے — خوبصورت کڑھائی' },
-  linen:       { name:'Linen/Khaddar', nameUr:'لنن/کھدر',    season:'mid-season', price:3600, wholesale:2999, inStock:true,  desc:'کلاسک آرام دہ کپڑا — درمیانی موسم کے لیے بہترین' },
-  kotail:      { name:'Kotail',        nameUr:'کوٹیل',        season:'formal',     price:3600, wholesale:2999, inStock:true,  desc:'پریمیم، رسمی مواقع کے لیے — خاص اور شاندار' },
-  karandi:     { name:'Karandi',       nameUr:'کرندی',        season:'mid-season', price:3600, wholesale:2999, inStock:true,  desc:'نرم، درمیانی موسم کا بہت مقبول کپڑا' },
-  marina:      { name:'Marina',        nameUr:'مارینہ',       season:'winter',     price:3600, wholesale:2999, inStock:true,  desc:'گرم، آرام دہ — سردیوں کا سب سے پسندیدہ' },
-  velvet:      { name:'Velvet',        nameUr:'ویلوٹ',        season:'winter',     price:3600, wholesale:2999, inStock:true,  desc:'شاہانہ، پر تعیش — سردیوں کی شان' },
-  dhanak:      { name:'Dhanak',        nameUr:'دھنک',         season:'winter',     price:3600, wholesale:2999, inStock:true,  desc:'نرم، گرم — سردیوں کا آرام دہ انتخاب' },
-};
-const WHOLESALE_MIN = 10; // minimum suits for wholesale price
-const RETAIL_DELIVERY = 200; // delivery charge for retail (city)
-const WHOLESALE_DELIVERY_CITY = 0; // free for wholesale city
-
-// [GR1] Find product by name/keyword (case-insensitive)
-function findProduct(text) {
-  if (!text) return null;
-  const lower = text.toLowerCase();
-  for (const [key, p] of Object.entries(CATALOG)) {
-    if (lower.includes(key) || lower.includes(p.name.toLowerCase()) || lower.includes(p.nameUr)) {
-      return { key, ...p };
-    }
-  }
-  return null;
-}
-
-// [GR2] PRICING GUARD — calculate price from catalog only
-function calcPrice(productKey, qty, isWholesale) {
-  const p = CATALOG[productKey];
-  if (!p) return null;
-  const unitPrice = (isWholesale && qty >= WHOLESALE_MIN) ? p.wholesale : p.price;
-  const total = unitPrice * qty;
-  const delivery = (isWholesale && qty >= WHOLESALE_MIN) ? WHOLESALE_DELIVERY_CITY : RETAIL_DELIVERY;
-  return { unitPrice, qty, total, delivery, grandTotal: total + delivery };
-}
-
-// [GR2] Validate price in ORDER tag against catalog
-function validateOrderPrice(orderTag) {
-  const product = findProduct(orderTag.product || '');
-  if (!product) return { valid: false, reason: `Product "${orderTag.product}" not in catalog` };
-  const qty = parseInt(orderTag.qty) || 1;
-  const isWholesale = qty >= WHOLESALE_MIN;
-  const pricing = calcPrice(product.key, qty, isWholesale);
-  const aiPrice = parseInt(String(orderTag.price || '').replace(/[^0-9]/g, ''));
-  if (aiPrice && Math.abs(aiPrice - pricing.total) > 100) {
-    return { valid: false, reason: `Price mismatch: AI said ${aiPrice}, catalog says ${pricing.total}`, corrected: pricing };
-  }
-  return { valid: true, pricing, product };
-}
-
-// [GR5] STOCK CHECK
-function getStockStatus(productKey) {
-  const p = CATALOG[productKey];
-  if (!p) return 'not_found';
-  return p.inStock ? 'in_stock' : 'out_of_stock';
-}
-
-// Build catalog section for system prompt (GR7 grounding)
-function buildCatalogPrompt() {
-  const lines = ['=== پروڈکٹ کیٹالاگ (ان قیمتوں کے علاوہ کوئی قیمت نہ بتائیں) ==='];
-  for (const [key, p] of Object.entries(CATALOG)) {
-    const stock = p.inStock ? '✅ دستیاب' : '❌ ختم';
-    lines.push(`${p.nameUr} (${p.name}): ${stock} | ریٹیل: ${p.price} روپے/سوٹ | ہول سیل (${WHOLESALE_MIN}+ سوٹ): ${p.wholesale} روپے/سوٹ`);
-  }
-  lines.push(`ڈیلیوری: شہر میں ${RETAIL_DELIVERY} روپے (ریٹیل) | ہول سیل شہر مفت`);
-  return lines.join('\n');
-}
-
-// [GR6] ADDRESS VALIDATOR — ensures complete address before order
-function validateAddress(address) {
-  if (!address || typeof address !== 'string') return { valid: false, msg: 'پتہ نہیں ملا' };
-  const trimmed = address.trim();
-  if (trimmed.length < 15) return { valid: false, msg: 'پتہ بہت مختصر ہے' };
-  const hasNumber   = /\d/.test(trimmed);
-  const wordCount   = trimmed.split(/[\s,،]+/).filter(Boolean).length;
-  const hasLocality = wordCount >= 4;
-  if (!hasNumber)   return { valid: false, msg: 'مکان/فلیٹ نمبر نہیں ہے' };
-  if (!hasLocality) return { valid: false, msg: 'گلی، محلہ، علاقہ کی تفصیل نہیں ہے' };
-  return { valid: true, msg: 'OK' };
-}
-
-// [R1] Auto Order ID — FA-YYYYMMDD-random4
-function generateOrderId() {
-  const d = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Karachi' }).replace(/-/g,'');
-  const r = Math.floor(1000 + Math.random() * 9000);
-  return `FA-${d}-${r}`;
-}
-
-// [GR3] ORDER STATE MACHINE — in-memory + Supabase
-if (!global._orderStates) global._orderStates = new Map();
-
-const ORDER_STATUS = {
-  BROWSING:  'browsing',
-  SELECTED:  'product_selected',
-  ADDR:      'address_pending',
-  ADDR_OK:   'address_collected',
-  PAY:       'payment_pending',
-  COD_WAIT:  'cod_pending',         // [GR4] waiting for COD confirmation
-  VERIFIED:  'verified',
-  CONFIRMED: 'confirmed',
-};
-
-function getOrderState(phone) {
-  return global._orderStates.get(phone) || { status: ORDER_STATUS.BROWSING };
-}
-function setOrderState(phone, patch) {
-  const current = getOrderState(phone);
-  const updated  = { ...current, ...patch, updatedAt: Date.now() };
-  global._orderStates.set(phone, updated);
-  return updated;
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// Vercel waitUntil
-// ════════════════════════════════════════════════════════════════════════════
+// ── Vercel waitUntil (send 200 fast, process async) [F2] ─────────────────────
 let waitUntilFn = null;
 try { const vf = require('@vercel/functions'); if (vf?.waitUntil) waitUntilFn = vf.waitUntil; } catch (_) {}
 
-// ── [H1] Circuit breaker ──────────────────────────────────────────────────────
-if (!global._cb)    global._cb    = new Map();
-if (!global._errs)  global._errs  = new Map();
-const isBlocked = k  => Date.now() < (global._cb.get(k) || 0);
-const blockFor  = (k, ms, why='') => {
-  global._cb.set(k, Date.now() + ms);
-  const e = global._errs.get(k) || { count:0, last:'' };
-  e.count++; e.last = why; global._errs.set(k, e);
-  console.warn(`[CB] ${k} blocked ${Math.round(ms/1000)}s why=${why} fails=${e.count}`);
-};
+// ── [F3] Circuit breaker — per model, in-memory ───────────────────────────────
+if (!global._cb) global._cb = new Map();
+const isBlocked = k      => Date.now() < (global._cb.get(k) || 0);
+const blockFor  = (k, ms) => { global._cb.set(k, Date.now() + ms); console.warn(`[CB] ${k} blocked ${Math.round(ms/1000)}s`); };
 
-// [H2] Force-reset if all blocked
-function selfHeal(keys) {
-  if (keys.length > 0 && keys.every(k => isBlocked(k))) {
-    keys.forEach(k => global._cb.delete(k));
-    console.warn('[SELF-HEAL] All providers blocked → force reset');
-  }
-}
-
-// [H3] Midnight reset
+// [F8] Midnight PKT reset — daily quota refills at midnight
 function midnightReset() {
   try {
     const pkt = new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Karachi',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date());
     const [h,m] = pkt.split(':').map(Number);
-    if (h===0 && m<=5 && global._cb.size>0) { global._cb.clear(); console.log('[MIDNIGHT] CB reset'); }
+    if (h===0 && m<=5 && global._cb.size>0) { global._cb.clear(); console.log('[CB] Midnight reset — quota refilled'); }
   } catch (_) {}
 }
 
-// ── [R3] Rate limiter per customer (max 30 msg/min) ──────────────────────────
-if (!global._rateLimit) global._rateLimit = new Map();
-function isRateLimited(phone) {
-  const now  = Date.now();
-  const win  = 60 * 1000;
-  const MAX  = 30;
-  const hist = (global._rateLimit.get(phone) || []).filter(t => now - t < win);
-  if (hist.length >= MAX) return true;
-  hist.push(now);
-  global._rateLimit.set(phone, hist);
+// [F1] Deduplication store
+if (!global._dedup) global._dedup = new Map();
+function alreadyProcessed(msgId) {
+  if (!msgId) return false;
+  const now = Date.now();
+  // Cleanup old entries
+  if (global._dedup.size > 500) for (const [k,v] of global._dedup) if (v <= now) global._dedup.delete(k);
+  if ((global._dedup.get(msgId)||0) > now) return true;
+  global._dedup.set(msgId, now + 10*60*1000); // 10 min TTL
   return false;
 }
 
-// ── [M1] Supabase persistent memory ──────────────────────────────────────────
-const _memCache = new Map(); // fast in-process cache
-
-async function dbGet(url, key, phone) {
-  if (_memCache.has(phone)) return _memCache.get(phone);
-  if (!url || !key) return null;
+// ── [F14] Neon DB — optional persistent memory ────────────────────────────────
+let _sql = null;
+function getSql(dbUrl) {
+  if (!dbUrl || !dbUrl.startsWith('postgres')) return null;
+  if (!_sql) { try { const {neon}=require('@neondatabase/serverless'); _sql=neon(dbUrl); } catch(e) { return null; } }
+  return _sql;
+}
+const _dbCache = new Map();
+async function dbGet(dbUrl, phone) {
+  if (_dbCache.has(phone)) return _dbCache.get(phone);
+  const sql = getSql(dbUrl); if (!sql) return null;
   try {
-    const r = await fetch(`${url}/rest/v1/zara_conversations?phone_number=eq.${encodeURIComponent(phone)}&select=history,customer_name,order_state`, {
-      headers: { apikey:key, Authorization:`Bearer ${key}` }
-    });
-    if (!r.ok) return null;
-    const rows = await r.json();
-    if (rows?.length) {
-      const data = { history:rows[0].history||[], customerName:rows[0].customer_name||'', orderState:rows[0].order_state||{} };
-      _memCache.set(phone, data);
-      return data;
-    }
-    return null;
-  } catch(e) { console.error('[DB GET]', e.message); return null; }
+    const rows = await sql`SELECT history, customer_name FROM zara_conversations WHERE phone_number=${phone} LIMIT 1`;
+    if (rows?.length) { const d={history:rows[0].history||[],customerName:rows[0].customer_name||''}; _dbCache.set(phone,d); return d; }
+  } catch(e) { console.error('[DB GET]',e.message); }
+  return null;
+}
+async function dbSave(dbUrl, phone, customerName, history) {
+  _dbCache.set(phone, {history,customerName});
+  const sql = getSql(dbUrl); if (!sql) return;
+  try {
+    await sql`INSERT INTO zara_conversations(phone_number,customer_name,history,last_seen,msg_count) VALUES(${phone},${customerName||''},${JSON.stringify(history.slice(-20))}::jsonb,NOW()::timestamptz,${history.length}) ON CONFLICT(phone_number) DO UPDATE SET customer_name=EXCLUDED.customer_name,history=EXCLUDED.history,last_seen=NOW()::timestamptz,msg_count=EXCLUDED.msg_count`;
+  } catch(e) { console.error('[DB SAVE]',e.message); }
 }
 
-async function dbSave(url, key, phone, customerName, history, orderState) {
-  _memCache.set(phone, { history, customerName, orderState });
-  if (!url || !key) return;
-  try {
-    await fetch(`${url}/rest/v1/zara_conversations`, {
-      method: 'POST',
-      headers: { apikey:key, Authorization:`Bearer ${key}`, 'Content-Type':'application/json', Prefer:'resolution=merge-duplicates' },
-      body: JSON.stringify({
-        phone_number:  phone,
-        customer_name: customerName||'',
-        history:       history.slice(-20),
-        order_state:   orderState||{},
-        last_seen:     new Date().toISOString(),
-        msg_count:     history.length
-      })
-    });
-  } catch(e) { console.error('[DB SAVE]', e.message); }
-}
-
-// Save confirmed order to zara_orders table
-async function dbSaveOrder(url, key, orderData) {
-  if (!url || !key) return;
-  try {
-    await fetch(`${url}/rest/v1/zara_orders`, {
-      method: 'POST',
-      headers: { apikey:key, Authorization:`Bearer ${key}`, 'Content-Type':'application/json', Prefer:'return=minimal' },
-      body: JSON.stringify({ ...orderData, created_at: new Date().toISOString(), status:'pending' })
-    });
-    console.log('[DB ORDER] Saved to zara_orders ✓');
-  } catch(e) { console.error('[DB ORDER]', e.message); }
-}
-
-// Local fallback
-const _localHist = new Map();
-function localHistory(phone) { if (!_localHist.has(phone)) _localHist.set(phone,[]); return _localHist.get(phone); }
-
-// ── City name fix [U2] ────────────────────────────────────────────────────────
+// ── [F9] City name correction (Whisper STT common errors) ─────────────────────
 const CITY_FIX = {
   faizabad:'Faisalabad', faizaabad:'Faisalabad', faisalabaad:'Faisalabad',
   faisalbad:'Faisalabad', fisalabad:'Faisalabad', lahroe:'Lahore',
   lhaore:'Lahore', karaachi:'Karachi', karachy:'Karachi',
-  rwalpindi:'Rawalpindi', rawalpndi:'Rawalpindi', gujranwla:'Gujranwala',
+  rwalpindi:'Rawalpindi', gujranwla:'Gujranwala',
 };
-const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()]||w) : t;
+const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()] || w) : t;
 
-// ── Google Sheets [GR3 confirmed orders] ─────────────────────────────────────
+// ── [F13] Google Sheets (optional) ────────────────────────────────────────────
+let _gToken = { token:null, exp:0 };
 async function getGToken(email, key) {
+  if (_gToken.token && Date.now() < _gToken.exp-300000) return _gToken.token;
   try {
     const now=Math.floor(Date.now()/1000), b64=s=>Buffer.from(s).toString('base64url');
     const h=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));
@@ -284,496 +115,593 @@ async function getGToken(email, key) {
     const s=crypto.createSign('RSA-SHA256'); s.update(`${h}.${p}`);
     const sig=s.sign(key.replace(/\\n/g,'\n'),'base64url');
     const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${h}.${p}.${sig}`});
-    return (await r.json()).access_token||null;
-  } catch(e) { console.error('[GTOKEN]',e.message); return null; }
+    const d=await r.json();
+    if (d.access_token) { _gToken={token:d.access_token,exp:Date.now()+(d.expires_in||3600)*1000}; return _gToken.token; }
+  } catch(e) { console.error('[GTOKEN]',e.message); }
+  return null;
 }
-async function sheetAppend(sid, email, key, row) {
-  if (!sid||!email||!key) return;
-  try {
-    const tok=await getGToken(email,key); if(!tok) return;
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:K:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{
-      method:'POST',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})
-    });
-    console.log('[SHEET] Row saved ✓');
-  } catch(e) { console.error('[SHEET]',e.message); }
-}
-
-// Parse [ORDER:...] tag from AI reply
 function parseOrderTag(text) {
   const m=text.match(/\[ORDER:([^\]]+)\]/i); if(!m) return null;
   const o={};
-  for (const p of m[1].split('|')) { const [k,...v]=p.split('='); if(k&&v.length) o[k.trim().toLowerCase()]=v.join('=').trim(); }
+  for(const p of m[1].split('|')){const[k,...v]=p.split('=');if(k&&v.length)o[k.trim().toLowerCase()]=v.join('=').trim();}
   return Object.keys(o).length?o:null;
+}
+async function saveToSheet(sid, email, key, order, phone) {
+  if(!sid||!email||!key) return;
+  try {
+    const tok=await getGToken(email,key); if(!tok) return;
+    const row=[new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),order.name||'',phone||'',order.product||'',order.qty||'',order.price||'',order.payment||'',order.address||'',order.city||'','Pending'];
+    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});
+    console.log('[SHEET] Order saved ✓');
+  } catch(e) { console.error('[SHEET]',e.message); }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getPKT() {
   try {
     const p={};
-    for (const x of new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Karachi',weekday:'long',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date())) p[x.type]=x.value;
+    for(const x of new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Karachi',weekday:'long',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date())) p[x.type]=x.value;
     return `${p.weekday} ${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} PKT`;
   } catch(e) { return 'PKT unavailable'; }
 }
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function oaiChat({url,key,model,messages,maxTokens=800,timeout=20000}) {
   const ctrl=new AbortController(), t=setTimeout(()=>ctrl.abort(),timeout);
   try { return await fetch(`${url}/chat/completions`,{method:'POST',signal:ctrl.signal,headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature:0.7,max_tokens:maxTokens})}); }
   finally { clearTimeout(t); }
 }
 
-// ════════════════════════════════════════════════════════════════════════════
-// MAIN HANDLER
-// ════════════════════════════════════════════════════════════════════════════
+// ── In-memory history (base architecture — kept exactly) ──────────────────────
+const chatHistories = new Map();
+
+// ─────────────────────────────────────────────────────────────────────────────
 module.exports = async (req, res) => {
   if (req.url?.includes('favicon.ico')) return res.status(204).end();
-  midnightReset();
+  midnightReset(); // [F8]
 
-  // Env
-  const WT   = (process.env.WHATSAPP_TOKEN      ||'').trim();
-  const PID  = (process.env.PHONE_NUMBER_ID     ||'').trim();
-  const VT   = (process.env.VERIFY_TOKEN        ||'').trim();
-  const GEM  = (process.env.GEMINI_API_KEY      ||'').trim();
-  const GROQ = (process.env.GROQ_API_KEY        ||'').trim();
-  const CER  = (process.env.CEREBRAS_API_KEY    ||'').trim();
-  const OR   = (process.env.OPENROUTER_API_KEY  ||'').trim();
-  const ELAB = (process.env.ELEVENLABS_API_KEY  ||'').trim();
-  const EVID = (process.env.ELEVENLABS_VOICE_ID ||'21m00Tcm4TlvDq8ikWAM').trim();
-  const JCN  = (process.env.JAZZCASH_NUMBER     ||'').trim();
-  const EPN  = (process.env.EASYPAISA_NUMBER    ||'').trim();
-  const SBURL= (process.env.SUPABASE_URL        ||'').trim();
-  const SBKEY= (process.env.SUPABASE_KEY        ||'').trim();
-  const GSID = (process.env.GOOGLE_SHEETS_ID    ||'').trim();
-  const GSA  = (process.env.GOOGLE_SA_EMAIL     ||'').trim();
-  const GSAK = (process.env.GOOGLE_SA_KEY       ||'').trim();
+  // ── Env vars ──────────────────────────────────────────────────────────────
+  const WHATSAPP_TOKEN      = (process.env.WHATSAPP_TOKEN      || '').trim();
+  const PHONE_NUMBER_ID     = (process.env.PHONE_NUMBER_ID     || '').trim();
+  const VERIFY_TOKEN        = (process.env.VERIFY_TOKEN        || '').trim();
+  const GEMINI_API_KEY      = (process.env.GEMINI_API_KEY      || '').trim();
+  const GROQ_API_KEY        = (process.env.GROQ_API_KEY        || '').trim();
+  const ELEVENLABS_API_KEY  = (process.env.ELEVENLABS_API_KEY  || '').trim();
+  const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID || '21m00Tcm4TlvDq8ikWAM').trim();
+  const JAZZCASH_NUMBER     = (process.env.JAZZCASH_NUMBER     || '').trim();
+  const EASYPAISA_NUMBER    = (process.env.EASYPAISA_NUMBER    || '').trim();
+  const CEREBRAS_API_KEY    = (process.env.CEREBRAS_API_KEY    || '').trim();
+  const OPENROUTER_API_KEY  = (process.env.OPENROUTER_API_KEY  || '').trim();
+  const DATABASE_URL        = (process.env.DATABASE_URL        || '').trim();
+  const GOOGLE_SHEETS_ID    = (process.env.GOOGLE_SHEETS_ID    || '').trim();
+  const GOOGLE_SA_EMAIL     = (process.env.GOOGLE_SA_EMAIL     || '').trim();
+  const GOOGLE_SA_KEY       = (process.env.GOOGLE_SA_KEY       || '').trim();
 
-  // ─── GET: Verify ────────────────────────────────────────────────────────
-  if (req.method==='GET') {
-    const prot=req.headers['x-forwarded-proto']||'https', host=req.headers['x-forwarded-host']||req.headers.host||'localhost';
-    const u=new URL(req.url,`${prot}://${host}`);
-    const mode=u.searchParams.get('hub.mode'), token=u.searchParams.get('hub.verify_token'), challenge=u.searchParams.get('hub.challenge');
-    if (mode&&token) {
-      if (mode==='subscribe'&&String(token).trim()===VT) { console.log('[VERIFY] OK'); return res.status(200).send(challenge); }
-      return res.status(403).send('Token Mismatch');
+  // ── [F12] System Prompt with PKT time ────────────────────────────────────
+  const SYSTEM_PROMPT = `You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or any software.
+
+CURRENT TIME (Asia/Karachi): ${getPKT()}
+
+=== IDENTITY ===
+- Name: Zara — Fatima Arts team member
+- Tone: warm, friendly, professional — like a helpful colleague, not a call-center script
+- Use customer's name in EVERY message
+- Max 2-3 emojis per message
+- Every message must feel personal, never copy-pasted
+- If asked who you are: "میں زارا ہوں، فاطمہ آرٹس سے 😊"
+
+=== LANGUAGE — AUTO DETECT ===
+- Urdu script in   → Urdu script out
+- English in       → English out
+- Roman Urdu in    → Roman Urdu out
+- Never switch language unless customer switches first
+- Use pure Pakistani Urdu tone — not Hindi, not English accent
+
+=== TIME-BASED GREETING (use CURRENT TIME above) ===
+06:00 – 12:00 → صبح بخیر! 🌅
+12:00 – 17:00 → خیریت سے ہیں؟ ☀️
+17:00 – 21:00 → شام بخیر! ✨
+21:00 – 06:00 → السلام علیکم! (brief reply, full answer next morning)
+Use greeting only on FIRST message of conversation, not every reply.
+
+=== CITY NAMES — IMPORTANT ===
+⚠️ Faisalabad (NOT Faizabad, NOT Faizaabad) — always spell correctly
+درست نام: Faisalabad • Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala
+
+=== CAPABILITIES ===
+You handle text messages AND voice notes (transcribed to text). Reply naturally to both.
+
+=== SEASON & FESTIVAL AWARENESS ===
+WINTER (Nov–Feb) → Promote first: Marina, Velvet, Dhanak, Karandi
+SUMMER (Apr–Sep) → Promote first: Lawn, Linen/Khaddar, Printed Suits
+EID UL FITR (Ramadan last 10 days) → Promote: Embroidered, Fancy, Kotail
+EID UL ADHA (Zul Hijja 1–10) → Promote: Embroidered, Velvet, Kotail
+WEDDING SEASON (Oct–Dec, Mar–Apr) → Promote: Embroidered, Velvet, Fancy
+
+=== PRODUCTS — ALL UNSTITCHED ===
+1. Lawn/Printed    — summer, light, breathable
+2. Embroidered     — weddings, celebrations, fancy
+3. Linen/Khaddar   — classic, mid-season comfort
+4. Kotail          — premium, formal occasions
+5. Karandi         — soft, popular mid-season
+6. Marina          — warm, cozy, winter
+7. Velvet          — rich, luxurious, winter
+8. Dhanak          — soft, warm, winter
+Always describe fabric feel + season + occasion FIRST. Price only when customer asks.
+
+=== UPSELL LOGIC ===
+After answering any product question, ALWAYS add one natural suggestion:
+Lawn pooche → "ویسے ہمارا Karandi بھی اس موسم میں بہت پسند کیا جا رہا ہے 🍂"
+Marina pooche → "اگر کچھ aur premium چاہیے تو ہمارا Velvet بھی دیکھیں — بہت خوبصورت ہے"
+Retail order → mention wholesale if reseller: "کیا آپ دکان کے لیے لے رہی ہیں؟ wholesale میں اچھی rate مل سکتی ہے"
+Upsell must feel NATURAL, never pushy. One suggestion per message, never more.
+
+=== PRICING ===
+RETAIL (single customer):
+• 1 suit = PKR 3,600
+• Delivery charges extra
+• No minimum order
+
+WHOLESALE (shop owners):
+• Minimum 10 suits
+• PKR 2,999 per suit
+• 10 suits = PKR 29,990
+• City delivery = FREE
+• Outside city = extra charges
+
+=== HAGGLING — SPECIFIC RESPONSES ===
+Response 1 (first time): "آپی، یہ قیمت پہلے سے بہت مناسب ہے — ہمارا کپڑا دیکھ کر خود اندازہ ہو جائے گا۔ اتنی quality اس price میں کہیں نہیں ملتی 🎨"
+Response 2 (second time): "آپی سمجھ سکتی ہوں — لیکن ہم quality میں کبھی compromise نہیں کرتے۔ یہی ہماری پہچان ہے 😊"
+Response 3 (third time): "آپی، discount تو boss کا اختیار ہے — میں ابھی ان سے پوچھتی ہوں" → alert boss
+NEVER give discount without boss approval.
+
+=== PAYMENT METHODS ===
+1. JazzCash  → ${JAZZCASH_NUMBER  || 'boss se confirm karein'}
+2. EasyPaisa → ${EASYPAISA_NUMBER || 'boss se confirm karein'}
+3. COD       → payment on delivery
+• COD: confirm full address + phone number
+• JazzCash/EasyPaisa: share number, ask for screenshot
+• Screenshot received → alert boss IMMEDIATELY
+• Never confirm order until payment verified or COD set
+
+=== DELIVERY ===
+• City (شہر): 1-2 working days
+• Outside city: 3-5 working days
+• Wholesale city delivery: FREE
+• After order: ask full address → save in Notes
+
+=== RETURN / EXCHANGE POLICY ===
+• NO returns — all sales final
+• Exchange ONLY: genuine defect or wrong item sent
+• Must request within 24 hours of delivery with photo proof
+• Boss makes final decision
+
+=== BUSINESS HOURS ===
+• Monday to Sunday: OPEN ✅
+• ONLY closed: Friday 11AM–3PM (Juma)
+• After 10PM: reply briefly, full answer next morning
+
+=== ORDER PROCESS ===
+1. Alert boss: name + product + retail/wholesale
+2. Send confirmation: Product name, Price breakdown, Payment options
+3. Ask delivery address
+4. Confirm payment method
+
+If order confirmed, include this tag on its own line:
+[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]
+
+=== BOSS ALERT — CALL IMMEDIATELY ===
+🚨 Customer angry, rude, or complaining
+🛍️ Any wholesale inquiry (10+ suits)
+💰 Retail order PKR 10,000 or more
+✅ Customer sends payment screenshot
+🔄 Customer requests exchange
+🏷️ Customer asks for discount 3rd time
+❓ Any unusual or confusing situation
+
+=== SITUATION DETECTION ===
+SITUATION 1 — New Customer: Warm welcome, introduce Fatima Arts, offer help.
+SITUATION 2 — Existing Customer: Personal reply using name + last product, upsell.
+SITUATION 3 — Order Placed: Confirm product + price + payment options, ask address.
+SITUATION 4 — Payment Done: Thank warmly, give delivery timeline.
+SITUATION 5 — Complaint: Sincere apology first, alert boss, ask for photo proof.
+SITUATION 6 — Haggling: Use 3-step sequence. Never give discount yourself.
+SITUATION 7 — Wholesale: Alert boss immediately.
+SITUATION 10 — Voice Note: Treat transcribed text as normal message, reply naturally.
+
+=== TRUST BUILDING ===
+Authenticity: "آپی! ہمارا کپڑا 100% اصلی ہے — ہم سالوں سے یہ کام کر رہے ہیں 🙏"
+Color fading: "آپی! رنگ پکا ہے، پہلی دھلائی میں ثابت ہو جائے گا 🎨"
+First buyer: "آپی! پہلا آرڈر ہمیشہ یادگار ہوتا ہے — ہم آپ کو مایوس نہیں کریں گے 😊"
+
+=== COD RISK MANAGEMENT ===
+Take full address (house number, street, area, city), nearby landmark, alternate phone.
+If COD not confirmed: hold order + alert boss.
+
+=== MESSAGE LENGTH ===
+Maximum 5-6 lines per message. Split into 2 if more info needed.
+
+=== MALE CUSTOMER ===
+Never use "آپی". Use "بھائی جان" or "جناب" or "آپ".
+
+=== MEMORY ===
+You remember the full conversation history. Use context. Never repeat answered questions.
+
+=== NEVER DO ===
+❌ Say you are AI, bot, or automated
+❌ Use any name other than Zara
+❌ Give discount without boss approval
+❌ Mention competitors
+❌ Confirm order without payment/COD
+❌ Message after 10PM PKT (outbound)
+❌ Message during Friday Juma 11AM-3PM`;
+
+  // ─── GET: Webhook Verification ───────────────────────────────────────────
+  if (req.method === 'GET') {
+    const protocol = req.headers['x-forwarded-proto'] || 'https';
+    const host     = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
+    const url      = new URL(req.url, `${protocol}://${host}`);
+    const mode     = url.searchParams.get('hub.mode');
+    const token    = url.searchParams.get('hub.verify_token');
+    const challenge= url.searchParams.get('hub.challenge');
+    if (mode && token) {
+      if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
+        console.log('[VERIFICATION SUCCESS] Webhook verified');
+        return res.status(200).send(challenge);
+      }
+      return res.status(403).send('Verification Token Mismatch');
     }
-    return res.status(200).send('Webhook Active');
+    return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // ─── POST ───────────────────────────────────────────────────────────────
-  if (req.method==='POST') {
-    let body=req.body;
-    if (typeof body==='string') { try { body=JSON.parse(body); } catch(e) {} }
+  // ─── POST: Message Handler ────────────────────────────────────────────────
+  if (req.method === 'POST') {
+    let body = req.body;
+    if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) {} }
 
-    const entry    = body?.entry?.[0];
-    const value    = entry?.changes?.[0]?.value;
-    const messages = Array.isArray(value?.messages) ? value.messages : [];
-    const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
+    const entry   = body?.entry?.[0];
+    const value   = entry?.changes?.[0]?.value;
+    const messages= Array.isArray(value?.messages) ? value.messages : [];
+    const contacts= Array.isArray(value?.contacts) ? value.contacts : [];
 
+    // [F2] Send 200 to Meta IMMEDIATELY — prevents retry storm
     if (!messages.length) return res.status(200).send('EVENT_RECEIVED');
-    if (!WT||!PID) { console.error('[CFG] Missing env vars'); return res.status(200).send('EVENT_RECEIVED'); }
+    if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+      console.error('[CONFIG] Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID');
+      return res.status(200).send('EVENT_RECEIVED');
+    }
 
-    if (!global._dedup) global._dedup = new Map();
-    const DEDUP_TTL = 10*60*1000;
-
-    const proc = (async () => {
-      const allProviders = ['g:gemini-3.7-flash','g:gemini-3.6-flash','cerebras','gr:openai/gpt-oss-120b','or:mistral'];
-      selfHeal(allProviders.filter(k=>isBlocked(k)));
-
+    const processPromise = (async () => {
       try {
-        for (const msg of messages) {
-          const msgId = msg?.id;
-          const now   = Date.now();
+        // Handle first message only (Meta usually sends one at a time)
+        const message = messages[0];
+        if (!message) return;
 
-          // Dedup
-          if ((global._dedup.get(msgId)||0) > now) { console.log('[DEDUP]', msgId); continue; }
-          if (msgId) global._dedup.set(msgId, now+DEDUP_TTL);
-          if (global._dedup.size>500) for(const[k,v]of global._dedup)if(v<=now)global._dedup.delete(k);
+        const msgId = message?.id;
 
-          const from = msg.from;
-          if (!from) continue;
+        // [F1] Deduplication — skip if already processed
+        if (alreadyProcessed(msgId)) {
+          console.log('[DEDUP] Already processed:', msgId);
+          return;
+        }
 
-          // [R3] Rate limit
-          if (isRateLimited(from)) { console.warn('[RATE] Blocked:', from); continue; }
+        // [F15] Validate fromNumber
+        const fromNumber = message.from;
+        if (!fromNumber) { console.error('[ERROR] message.from missing'); return; }
 
-          const isAudio = msg.type==='audio'||msg.type==='voice';
-          const contact = contacts.find(c=>c?.wa_id===from)||contacts[0]||null;
-          let customerName = (contact?.profile?.name||'').trim();
+        const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
+        const contact         = contacts.find(c => c?.wa_id === fromNumber) || contacts[0] || null;
+        const customerName    = (contact?.profile?.name || '').trim();
 
-          // [M1] Load from Supabase
-          let history = [], dbOrderState = {};
-          const dbData = await dbGet(SBURL, SBKEY, from);
-          if (dbData) {
-            history       = dbData.history || [];
-            dbOrderState  = dbData.orderState || {};
-            if (!customerName && dbData.customerName) customerName = dbData.customerName;
+        let userMessageText = '';
+
+        // ── STEP A: Text Extract or Groq Whisper Transcription ────────────
+        if (message.type === 'text') {
+          userMessageText = fixCities(message.text?.body || ''); // [F9]
+
+        } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
+          console.log('[STEP A] Fetching audio from Meta...');
+          const mediaId = message.audio?.id || message.voice?.id;
+
+          if (!mediaId) {
+            userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
           } else {
-            history = localHistory(from);
-          }
+            const mediaRes  = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+              headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
+            });
+            if (!mediaRes.ok) {
+              console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
+              userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+            } else {
+              const mediaData = await mediaRes.json();
+              if (!mediaData.url) {
+                // [F16] was silent before — now logged
+                console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
+                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+              } else {
+                const audioStream = await fetch(mediaData.url, {
+                  headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
+                });
+                const arrayBuffer = await audioStream.arrayBuffer();
 
-          // [GR3] Sync order state from DB to memory
-          if (Object.keys(dbOrderState).length > 0 && !global._orderStates.has(from)) {
-            global._orderStates.set(from, dbOrderState);
-          }
-          const orderState = getOrderState(from);
+                const formData = new globalThis.FormData();
+                const blob     = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
+                formData.append('file',     blob, 'voice.ogg');
+                formData.append('model',    'whisper-large-v3-turbo');
+                formData.append('language', 'ur');
+                // [F10] Explicit Faisalabad mention — fixes Whisper "Faizabad" error
+                formData.append('prompt',   'فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad (NOT Faizabad)، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک، کپڑے کی دکان');
 
-          // STEP A: Extract text or transcribe voice
-          let userText = '';
-          if (msg.type==='text') {
-            userText = fixCities(msg.text?.body||'');
-          } else if (isAudio && GROQ && WT) {
-            const mediaId = msg.audio?.id||msg.voice?.id;
-            if (!mediaId) { userText='[Customer ne voice bheja]'; }
-            else {
-              console.log('[A] mediaId:', mediaId);
-              const mr=await fetch(`https://graph.facebook.com/v20.0/${mediaId}`,{headers:{Authorization:`Bearer ${WT}`}});
-              if (!mr.ok) { userText='[Customer ne voice bheja]'; }
-              else {
-                const md=await mr.json().catch(()=>({}));
-                if (!md?.url) { userText='[Customer ne voice bheja]'; }
-                else {
-                  const ar=await fetch(md.url,{headers:{Authorization:`Bearer ${WT}`}});
-                  if (!ar.ok) { userText='[Customer ne voice bheja]'; }
-                  else {
-                    const buf=await ar.arrayBuffer();
-                    const fd=new globalThis.FormData();
-                    fd.append('file',new globalThis.Blob([buf],{type:'audio/ogg'}),'voice.ogg');
-                    fd.append('model','whisper-large-v3-turbo');
-                    fd.append('language','ur');
-                    fd.append('prompt','فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad (NOT Faizabad)، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک');
-                    const gr=await fetch('https://api.groq.com/openai/v1/audio/transcriptions',{method:'POST',headers:{Authorization:`Bearer ${GROQ}`},body:fd});
-                    if (gr.ok) { const gd=await gr.json().catch(()=>({})); userText=fixCities((gd.text||'').trim()); console.log('[A OK] len:',userText.length); }
-                    else { console.error('[A FAIL] Groq:', gr.status); userText='[Customer ne voice bheja]'; }
-                  }
+                const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                  method:  'POST',
+                  headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
+                  body:    formData
+                });
+
+                if (groqRes.ok) {
+                  const groqData  = await groqRes.json();
+                  userMessageText = fixCities((groqData.text || '').trim()); // [F9]
+                  console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0, 80));
+                } else {
+                  console.error('[STEP A FAIL] Groq status:', groqRes.status);
+                  userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
                 }
               }
             }
-          } else if (msg.type==='image')   { userText='[Customer ne image bheji — poochein kya chahiye]'; }
-            else if (msg.type==='sticker') { userText='[Customer ne sticker bheja — friendly acknowledgment do]'; }
-            else if (msg.type==='document'){ userText='[Customer ne document bheja]'; }
-            else                           { userText='[Customer ne kuch bheja]'; }
-
-          if (!userText.trim()) userText='السلام علیکم';
-
-          // [GR5] Stock check — detect product mention in user message
-          const mentionedProduct = findProduct(userText);
-          let stockWarning = '';
-          if (mentionedProduct && !mentionedProduct.inStock) {
-            stockWarning = `\n⚠️ SYSTEM NOTE: Customer نے "${mentionedProduct.nameUr}" مانگا ہے جو اس وقت OUT OF STOCK ہے۔ Zara کو clearly بتانا ہے کہ یہ ابھی available نہیں، اور متبادل suggest کریں۔`;
           }
 
-          // [R2] Wholesale auto-detect
-          const isWholesaleLikely = /\b(10|1[1-9]|[2-9]\d|دوکان|دکان|shop|wholesale|ہول)\b/i.test(userText);
+        } else if (message.type === 'image')    { userMessageText = '[Customer ne ek image bheji hai — poochein kya dekhna chahte hain]'; }
+          else if (message.type === 'sticker')  { userMessageText = '[Customer ne sticker bheja — friendly acknowledgment do]'; }
+          else if (message.type === 'document') { userMessageText = '[Customer ne document bheja — poochein kya chahiye]'; }
+          else                                  { userMessageText = '[Customer ne kuch bheja — poochein kya chahiye]'; }
 
-          // [GR7] Build grounded system prompt
-          const SYS = `آپ زارہ ہیں — فاطمہ آرٹس (Fatima Arts) کی سیلز ایجنٹ۔ آپ روبوٹ نہیں ہیں۔ کبھی AI یا automation کا ذکر نہ کریں۔
+        if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
 
-CURRENT TIME: ${getPKT()}
-${customerName ? `CUSTOMER NAME: ${customerName}` : ''}
-ORDER STATE: ${orderState.status || 'browsing'}
-${isWholesaleLikely ? '🏪 WHOLESALE INQUIRY LIKELY: اگر 10+ suits ہیں تو wholesale rate لاگو کریں' : ''}
-${stockWarning}
+        // ── Load conversation history ─────────────────────────────────────
+        let history = [];
+        // Try Neon DB first [F14], fallback to in-memory
+        const dbData = await dbGet(DATABASE_URL, fromNumber);
+        if (dbData) {
+          history = dbData.history || [];
+        } else {
+          if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, []);
+          history = chatHistories.get(fromNumber);
+        }
+        const MAX_HISTORY = 20;
 
-=== سخت قواعد (ان کی کبھی خلاف ورزی نہ کریں) ===
-❌ قیمت خود calculate نہ کریں — نیچے دیے catalog سے ہی بتائیں
-❌ catalog میں موجود products کے علاوہ کوئی product نہ بتائیں
-❌ out of stock product کو available نہ کہیں
-❌ ادھورے پتے پر آرڈر confirm نہ کریں
-❌ payment کی تصدیق کے بغیر آرڈر final نہ کریں
-❌ AI، bot، یا automated کا ذکر کبھی نہ کریں
-❌ boss کی اجازت کے بغیر discount نہ دیں
+        const geminiContents = [
+          ...history,
+          { role: 'user', parts: [{ text: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }] }
+        ];
+        const oaiMessages = [
+          { role: 'system', content: SYSTEM_PROMPT },
+          ...history.map(c => ({ role: c.role==='model'?'assistant':'user', content: c.parts?.[0]?.text||'' })),
+          { role: 'user', content: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }
+        ];
 
-${buildCatalogPrompt()}
+        let aiReply = '';
 
-=== پہچان ===
-نام: زارہ | فاطمہ آرٹس | گرم، دوستانہ، پیشہ ورانہ لہجہ
-ہر پیغام میں customer کا نام | max 2-3 emoji | ہر پیغام personal
+        // ══════════════════════════════════════════════════════════════════
+        // STEP B: AI CHAIN — same logic as base + 429 handling + fallbacks
+        // ══════════════════════════════════════════════════════════════════
 
-=== زبان ===
-اردو میں → اردو | Roman Urdu میں → Roman Urdu | English میں → English
-صرف پاکستانی اردو لہجہ — ہندی یا انگریزی accent نہیں
+        // Tier 1+2: Gemini (primary — best Urdu quality)
+        if (!aiReply && GEMINI_API_KEY) {
+          const models = ['gemini-3.7-flash', 'gemini-3.6-flash'];
+          for (const model of models) {
+            if (aiReply) break;
+            const cbKey = `g:${model}`;
+            if (isBlocked(cbKey)) { console.warn('[SKIP]', cbKey); continue; }
 
-=== وقت سلام (PKT) ===
-06:00–12:00 → صبح بخیر! 🌅 | 12:00–17:00 → خیریت سے ہیں؟ ☀️
-17:00–21:00 → شام بخیر! ✨ | 21:00–06:00 → السلام علیکم!
-صرف پہلے پیغام پر
-
-=== شہر === فیصل آباد = Faisalabad (کبھی Faizabad نہیں)
-
-=== موسم ===
-سردی (نومبر–فروری): مارینہ، ویلوٹ، دھنک، کرندی پہلے
-گرمی (اپریل–ستمبر): لان، لنن پہلے
-
-=== اپ سیل (ایک، فطری) ===
-لان پوچھے → کرندی mention کریں
-مارینہ پوچھے → ویلوٹ mention کریں
-Retail → wholesale hint کریں اگر دکاندار لگے
-
-=== مول بھاؤ ===
-1st: "آپی، یہ قیمت پہلے سے بہت مناسب ہے 🎨"
-2nd: "آپی! ہم quality میں کبھی compromise نہیں کرتے 😊"
-3rd: "آپی، discount تو boss کا اختیار ہے" → boss alert
-
-=== ادائیگی ===
-1. JazzCash → ${JCN||'boss se confirm karein'}
-2. EasyPaisa → ${EPN||'boss se confirm karein'}
-3. COD — پتہ + فون + متبادل فون نمبر لیں
-
-=== [GR4] COD تصدیق (لازمی تین مراحل) ===
-جب customer COD چنے:
-1. مکمل پتہ مانگیں (مکان نمبر + گلی + علاقہ + شہر + landmark)
-2. متبادل فون نمبر مانگیں
-3. یہ پوچھیں: "کیا آپ کے گھر میں کوئی package receive کر سکتا ہے؟"
-صرف یہ تینوں معلومات ملنے کے بعد COD confirm کریں۔
-
-=== [GR6] پتہ کی شرط ===
-مکمل پتہ لازمی: مکان/فلیٹ نمبر + گلی + علاقہ + شہر
-ادھورے پتے پر آرڈر بالکل نہ کریں — مزید پوچھیں
-
-=== [GR3] آرڈر کے مراحل ===
-1. customer product چنے → price بتائیں (catalog سے)
-2. پتہ مانگیں → validate کریں
-3. ادائیگی کا طریقہ مانگیں
-4. COD ہے تو 3-step verification
-5. سب ٹھیک → [ORDER:...] tag لکھیں اور confirm کریں
-
-=== آرڈر ٹیگ (صرف جب سب confirm ہو) ===
-[ORDER:name=CustomerName|product=ProductKey|qty=2|price=7200|payment=COD|address=Full Address|city=Faisalabad]
-productKey must be one of: lawn, embroidered, linen, kotail, karandi, marina, velvet, dhanak
-price must match catalog exactly (qty × unit price)
-
-=== boss alert ===
-🚨 ناراض | 🛍️ 10+ سوٹ | 💰 10,000+ | ✅ screenshot | 🔄 تبادلہ | 🏷️ تیسری discount | ❓ غیر معمولی
-
-=== یادداشت === پوری گفتگو یاد رکھیں۔ دوبارہ نہ پوچھیں جو پہلے پوچھا۔
-
-=== مرد customer === "آپی" نہیں — "بھائی جان" یا "جناب"
-
-=== ROUTING TAG (بالکل آخری line) ===
-[VOICE] = voice-only / ان پڑھ customer
-[TEXT]  = پڑھا لکھا customer
-Voice + ان پڑھ → [VOICE] | Voice + پڑھا لکھا → [TEXT] | Text → [TEXT] | پہلی بار → [VOICE]`;
-
-          // Build AI inputs
-          const histG = [...history, { role:'user', parts:[{text:(customerName?`Customer: ${customerName}\n`:'')+`Message:\n${userText}`}] }];
-          const histO = [
-            { role:'system', content:SYS },
-            ...history.map(c=>({role:c.role==='model'?'assistant':'user',content:c.parts?.[0]?.text||''})),
-            { role:'user', content:(customerName?`Customer: ${customerName}\n`:'')+`Message:\n${userText}` }
-          ];
-
-          let aiReply='', usedProv='';
-
-          // ════════════════════════════════════════════════════════════
-          // STEP B: 5-TIER AI CHAIN
-          // ════════════════════════════════════════════════════════════
-
-          // Tier 1+2: Gemini
-          if (!aiReply && GEM) {
-            for (const m of ['gemini-3.7-flash','gemini-3.6-flash']) {
+            for (let attempt = 1; attempt <= 2; attempt++) {
               if (aiReply) break;
-              const cb=`g:${m}`; if(isBlocked(cb)){console.warn('[SKIP]',cb);continue;}
-              for (let a=1;a<=2;a++) {
-                if (aiReply) break;
-                const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),20000);
-                try {
-                  console.log(`[B] ${cb} att${a}`);
-                  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${GEM}`,{
-                    method:'POST',headers:{'Content-Type':'application/json'},signal:ctrl.signal,
-                    body:JSON.stringify({system_instruction:{parts:[{text:SYS}]},contents:histG,generationConfig:{temperature:0.7,maxOutputTokens:a===1?800:600}})
-                  });
-                  if (r.ok){const d=await r.json().catch(()=>({}));const raw=d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();if(raw){aiReply=raw.replace(/[*_~`#]/g,'').trim();usedProv=cb;}console.log(`[B OK] ${cb} a${a}`);break;}
-                  if (r.status===429){blockFor(cb,5*60*1000,'429');break;}
-                  if (r.status===503&&a<2){await sleep(4000);continue;}
-                  const et=await r.text().catch(()=>'');console.error(`[B FAIL] ${cb} ${r.status}:`,et.slice(0,80));break;
-                } catch(e){const ab=e?.name==='AbortError'||String(e?.message||'').includes('abort');if(ab&&a<2){await sleep(2000);continue;}console.error(`[B EXC] ${cb}:`,e?.message);break;}
-                finally{clearTimeout(t);}
-              }
-            }
-          }
-
-          // Tier 3: Cerebras
-          if (!aiReply&&CER&&!isBlocked('cerebras')) {
-            for(let a=1;a<=2;a++){if(aiReply)break;try{console.log(`[B] cerebras a${a}`);const r=await oaiChat({url:'https://api.cerebras.ai/v1',key:CER,model:'llama-3.3-70b',messages:histO});if(r.ok){const d=await r.json().catch(()=>({}));const raw=d.choices?.[0]?.message?.content?.trim();if(raw){aiReply=raw.replace(/[*_~`#]/g,'').trim();usedProv='cerebras';}console.log('[B OK] cerebras');break;}if(r.status===429){blockFor('cerebras',5*60*1000,'429');break;}if(r.status===503&&a<2){await sleep(4000);continue;}console.error('[B FAIL] cerebras',r.status);break;}catch(e){const ab=e?.name==='AbortError'||String(e?.message||'').includes('abort');if(ab&&a<2){await sleep(2000);continue;}console.error('[B EXC] cerebras:',e?.message);break;}}
-          }
-
-          // Tier 4: Groq
-          if (!aiReply&&GROQ) {
-            for(const gm of['openai/gpt-oss-120b','qwen/qwen3.6-27b']){if(aiReply)break;const cb=`gr:${gm}`;if(isBlocked(cb))continue;try{console.log(`[B] ${cb}`);const r=await oaiChat({url:'https://api.groq.com/openai/v1',key:GROQ,model:gm,messages:histO});if(r.ok){const d=await r.json().catch(()=>({}));const raw=d.choices?.[0]?.message?.content?.trim();if(raw){aiReply=raw.replace(/[*_~`#]/g,'').trim();usedProv=cb;}console.log(`[B OK] ${cb}`);break;}if(r.status===429){blockFor(cb,5*60*1000,'429');break;}console.error(`[B FAIL] ${cb}`,r.status);break;}catch(e){console.error(`[B EXC] ${cb}:`,e?.message);break;}}
-          }
-
-          // Tier 5: OpenRouter
-          if (!aiReply&&OR&&!isBlocked('or:mistral')) {
-            try{console.log('[B] openrouter');const r=await oaiChat({url:'https://openrouter.ai/api/v1',key:OR,model:'mistralai/mistral-7b-instruct:free',messages:histO});if(r.ok){const d=await r.json().catch(()=>({}));const raw=d.choices?.[0]?.message?.content?.trim();if(raw){aiReply=raw.replace(/[*_~`#]/g,'').trim();usedProv='or:mistral';}console.log('[B OK] openrouter');}else if(r.status===429)blockFor('or:mistral',5*60*1000,'429');else console.error('[B FAIL] openrouter',r.status);}catch(e){console.error('[B EXC] openrouter:',e?.message);}
-          }
-
-          if (!aiReply) { aiReply='Thori dair mein wapas aati hoon. Shukriya sabr ka 🙏'; console.warn('[B FALLBACK]'); }
-          else console.log(`[B DONE] prov=${usedProv}`);
-
-          // ════════════════════════════════════════════════════════════
-          // [GR2+GR4+GR6] GROUNDING VALIDATION
-          // ════════════════════════════════════════════════════════════
-          const orderTag = parseOrderTag(aiReply);
-          if (orderTag) {
-            // [GR2] Price validation
-            const priceCheck = validateOrderPrice(orderTag);
-            if (!priceCheck.valid) {
-              console.warn('[GR2] Price mismatch:', priceCheck.reason);
-              if (priceCheck.corrected) {
-                // Correct the price in reply
-                aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi,
-                  `[ORDER:name=${orderTag.name}|product=${orderTag.product}|qty=${orderTag.qty}|price=${priceCheck.corrected.total}|payment=${orderTag.payment}|address=${orderTag.address}|city=${orderTag.city}]`
+              const controller = new AbortController();
+              // [F4] Timeout raised to 20s
+              const timeoutId  = setTimeout(() => controller.abort(), 20000);
+              try {
+                console.log(`[STEP B] Querying ${model} (attempt ${attempt})...`);
+                const r = await fetch(
+                  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+                  { method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
+                    body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:800}}) }
                 );
-                console.log('[GR2] Price corrected to:', priceCheck.corrected.total);
-              }
-            }
-
-            // [GR6] Address validation
-            const addrCheck = validateAddress(orderTag.address);
-            if (!addrCheck.valid) {
-              console.warn('[GR6] Address invalid:', addrCheck.msg);
-              // Remove order tag — address incomplete
-              aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
-              aiReply += `\n\n⚠️ پتہ مکمل نہیں ہے (${addrCheck.msg})۔ براہ کرم مکمل پتہ دیں۔`;
-            } else {
-              // [GR4] COD verification state update
-              if ((orderTag.payment||'').toLowerCase().includes('cod')) {
-                const cod_state = setOrderState(from, {
-                  status:      ORDER_STATUS.COD_WAIT,
-                  product:     orderTag.product,
-                  qty:         parseInt(orderTag.qty)||1,
-                  price:       priceCheck.corrected?.total || parseInt(orderTag.price)||0,
-                  payment:     'COD',
-                  address:     orderTag.address,
-                  city:        fixCities(orderTag.city||''),
-                  customerName: orderTag.name||customerName,
-                });
-                console.log('[GR4] COD state set, awaiting confirmation');
-              }
-
-              // [GR3] Confirmed order — save to DB + sheet
-              const orderId = generateOrderId();
-              const finalOrder = {
-                order_id:      orderId,
-                phone_number:  from,
-                customer_name: orderTag.name||customerName||'',
-                product:       orderTag.product||'',
-                qty:           parseInt(orderTag.qty)||1,
-                price:         priceCheck.corrected?.total || parseInt(orderTag.price)||0,
-                payment:       orderTag.payment||'',
-                address:       orderTag.address||'',
-                city:          fixCities(orderTag.city||''),
-              };
-
-              // Remove tag from reply, add order ID
-              aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
-              aiReply += `\n\nآپ کا آرڈر نمبر: *${orderId}* 🎉`;
-
-              // Save async
-              const row = [new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}), finalOrder.customer_name, from, finalOrder.product, finalOrder.qty, finalOrder.price, finalOrder.payment, finalOrder.address, finalOrder.city, orderId, 'Pending'];
-              sheetAppend(GSID,GSA,GSAK,row).catch(()=>{});
-              dbSaveOrder(SBURL,SBKEY,finalOrder).catch(()=>{});
-              setOrderState(from, { status:ORDER_STATUS.CONFIRMED, orderId });
-              console.log('[GR3] Order confirmed:', orderId);
+                if (r.ok) {
+                  const d   = await r.json();
+                  const raw = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+                  if (raw) aiReply = raw.replace(/[*_~`#]/g,'').trim();
+                  console.log(`[STEP B SUCCESS] ${model} (attempt ${attempt})`);
+                  break;
+                }
+                // [F3] 429 circuit breaker
+                if (r.status === 429) { blockFor(cbKey, 5*60*1000); break; }
+                if (r.status === 503 && attempt < 2) {
+                  console.warn(`[STEP B 503] ${model} overloaded, retry in 2s...`);
+                  await sleep(2000); continue;
+                }
+                const et = await r.text().catch(()=>'');
+                console.error(`[STEP B FAIL] ${model} ${r.status}:`, et.slice(0,150));
+                break;
+              } catch(e) {
+                // [F4] Abort retry once
+                const isAbort = e?.name==='AbortError' || String(e?.message||'').includes('abort');
+                if (isAbort && attempt < 2) { console.warn(`[STEP B TIMEOUT] ${model} retry...`); await sleep(2000); continue; }
+                console.error(`[STEP B EXCEPTION] ${model}:`, e.message);
+                break;
+              } finally { clearTimeout(timeoutId); }
             }
           }
+        }
 
-          // ── ROUTING: Extract [VOICE]/[TEXT] tag FIRST, then clean reply ──
-          // BUG FIX: tags must be read BEFORE fixCities/strip removes them
-          let sendVoice = false;
-          {
-            const lines   = aiReply.trim().split('\n');
-            const lastFew = lines.slice(-4).map(l => l.trim().toUpperCase());
-            const hasV    = lastFew.some(l => l === '[VOICE]');
-            const hasT    = lastFew.some(l => l === '[TEXT]');
+        // Tier 3: Cerebras llama-3.3-70b [F6] — optional, 2100 tok/s, free
+        if (!aiReply && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
+          try {
+            console.log('[STEP B] Trying Cerebras...');
+            const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages});
+            if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); console.log('[STEP B SUCCESS] Cerebras'); }
+            else if (r.status===429) blockFor('cerebras',5*60*1000);
+            else console.error('[STEP B FAIL] Cerebras:', r.status);
+          } catch(e) { console.error('[STEP B EXC] Cerebras:', e.message); }
+        }
 
-            if (hasV || hasT) {
-              // Strip tag lines from bottom of reply
-              let cut = lines.length;
-              for (let i = lines.length - 1; i >= 0; i--) {
-                const u = lines[i].trim().toUpperCase();
-                if (u === '[VOICE]' || u === '[TEXT]' || u === '') cut = i;
-                else break;
-              }
-              aiReply = lines.slice(0, cut).join('\n').trim();
-
-              // Routing decision
-              if (!isAudio) {
-                // Customer sent text → always TEXT reply
-                sendVoice = false;
-                console.log('[ROUTE] Text in → TEXT');
-              } else if (hasV) {
-                // Voice in + uneducated → VOICE reply
-                sendVoice = true;
-                console.log('[ROUTE] Voice + uneducated → VOICE');
-              } else {
-                // Voice in + educated → TEXT reply
-                sendVoice = false;
-                console.log('[ROUTE] Voice + educated → TEXT');
-              }
-            } else {
-              // No tag found — safe default: match what customer sent
-              sendVoice = isAudio;
-              console.log('[ROUTE] No tag — default:', sendVoice ? 'VOICE' : 'TEXT');
-            }
+        // Tier 4: Groq LLM [F5] — correct 2026 model names
+        if (!aiReply && GROQ_API_KEY) {
+          for (const gm of ['openai/gpt-oss-120b', 'qwen/qwen3.6-27b']) {
+            if (aiReply) break;
+            const cbKey = `gr:${gm}`; if (isBlocked(cbKey)) continue;
+            try {
+              console.log(`[STEP B] Trying Groq ${gm}...`);
+              const r = await oaiChat({url:'https://api.groq.com/openai/v1',key:GROQ_API_KEY,model:gm,messages:oaiMessages});
+              if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); console.log(`[STEP B SUCCESS] Groq:${gm}`); break; }
+              if (r.status===429) { blockFor(cbKey,5*60*1000); break; }
+              console.error(`[STEP B FAIL] Groq:${gm}`, r.status); break;
+            } catch(e) { console.error(`[STEP B EXC] Groq:${gm}:`, e.message); break; }
           }
+        }
 
-          // NOW clean cities + remove any leftover stray tags
-          aiReply = fixCities(aiReply).replace(/\[VOICE\]|\[TEXT\]|\[ORDER:[^\]]*\]/gi, '').trim();
+        // Tier 5: OpenRouter [F7] — optional free fallback
+        if (!aiReply && OPENROUTER_API_KEY && !isBlocked('or:mistral')) {
+          try {
+            console.log('[STEP B] Trying OpenRouter...');
+            const r = await oaiChat({url:'https://openrouter.ai/api/v1',key:OPENROUTER_API_KEY,model:'mistralai/mistral-7b-instruct:free',messages:oaiMessages});
+            if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); console.log('[STEP B SUCCESS] OpenRouter'); }
+            else if (r.status===429) blockFor('or:mistral',5*60*1000);
+            else console.error('[STEP B FAIL] OpenRouter:', r.status);
+          } catch(e) { console.error('[STEP B EXC] OpenRouter:', e.message); }
+        }
 
-          if (!aiReply.trim()) aiReply='Thori dair mein wapas aati hoon. Shukriya 🙏';
+        // All models failed
+        if (!aiReply) {
+          aiReply = 'Thori dair mein wapas aati hoon, abhi system busy hai. Shukriya sabr ka 🙏';
+          console.warn('[STEP B FALLBACK] All models failed.');
+        }
 
-          // [M1] Save history + order state to Supabase
-          history.push({role:'user',parts:[{text:userText}]});
-          history.push({role:'model',parts:[{text:aiReply}]});
-          if(history.length>20)history.splice(0,history.length-20);
-          const currentOrderState = getOrderState(from);
-          dbSave(SBURL,SBKEY,from,customerName,history,currentOrderState).catch(()=>{});
-          if(!SBURL){const lh=localHistory(from);lh.push({role:'user',parts:[{text:userText}]});lh.push({role:'model',parts:[{text:aiReply}]});if(lh.length>20)lh.splice(0,lh.length-20);}
+        // [F13] Google Sheets — save order if [ORDER:...] tag found
+        const orderTag = parseOrderTag(aiReply);
+        if (orderTag) {
+          aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
+          saveToSheet(GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY, orderTag, fromNumber).catch(()=>{});
+          console.log('[ORDER] Saved to sheet:', orderTag.product, orderTag.city);
+        }
 
-          // STEP C: ElevenLabs TTS [U1]
-          let voiceSent=false;
-          if(sendVoice&&ELAB&&EVID&&WT&&PID){
-            try{
-              console.log('[C] TTS...');
-              const tts=await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${EVID}`,{
-                method:'POST',headers:{'xi-api-key':ELAB,'Content-Type':'application/json','Accept':'audio/mpeg'},
-                body:JSON.stringify({text:aiReply,model_id:'eleven_flash_v2_5',language_code:'ur',voice_settings:{stability:0.75,similarity_boost:0.85,style:0.4,use_speaker_boost:true}})
-              });
-              if(tts.ok){
-                const buf=await tts.arrayBuffer();
-                const mfd=new globalThis.FormData();
-                mfd.append('messaging_product','whatsapp');
-                mfd.append('file',new globalThis.Blob([buf],{type:'audio/mpeg'}),'voice.mp3');
-                mfd.append('type','audio/mpeg');
-                const up=await fetch(`https://graph.facebook.com/v20.0/${PID}/media`,{method:'POST',headers:{Authorization:`Bearer ${WT}`},body:mfd});
-                const ud=await up.json().catch(()=>({}));
-                if(up.ok&&ud?.id){
-                  const vr=await fetch(`https://graph.facebook.com/v20.0/${PID}/messages`,{method:'POST',headers:{Authorization:`Bearer ${WT}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:from,type:'audio',audio:{id:ud.id}})});
-                  if(vr.ok){voiceSent=true;console.log('[C OK]');}
-                  else console.error('[C FAIL] send:',vr.status);
-                }else console.error('[C FAIL] upload:',up.status);
-              }else if(tts.status===429)console.warn('[C] 429→text');
-              else console.error('[C FAIL] EL:',tts.status);
-            }catch(e){console.error('[C ERR]:',e.message);}
-          }
+        // [F9] City fix on AI reply
+        aiReply = fixCities(aiReply);
+        if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
 
-          // STEP D: Text reply
-          if(!voiceSent&&WT&&PID){
-            const tr=await fetch(`https://graph.facebook.com/v20.0/${PID}/messages`,{
-              method:'POST',headers:{Authorization:`Bearer ${WT}`,'Content-Type':'application/json'},
-              body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:from,type:'text',text:{preview_url:false,body:aiReply}})
+        // ── Save turn to history ──────────────────────────────────────────
+        history.push({ role: 'user',  parts: [{ text: userMessageText }] });
+        history.push({ role: 'model', parts: [{ text: aiReply }] });
+        if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+
+        // Update in-memory Map (always keep in sync)
+        if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, []);
+        chatHistories.set(fromNumber, history);
+
+        // Save to Neon DB async [F14]
+        dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
+
+        // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note ─────────────────
+        // SAME LOGIC AS BASE: if customer sent audio → try voice reply
+        // [F11] Flash v2.5 + language_code:ur for better Urdu
+        let voiceSentSuccess = false;
+
+        if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+          try {
+            console.log('[STEP C] Converting to voice via ElevenLabs...');
+            const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
+              method:  'POST',
+              headers: {
+                'xi-api-key':   ELEVENLABS_API_KEY,
+                'Content-Type': 'application/json',
+                'Accept':       'audio/mpeg'
+              },
+              body: JSON.stringify({
+                text:           aiReply,
+                model_id:       'eleven_flash_v2_5',  // [F11] faster + better Urdu than multilingual_v2
+                language_code:  'ur',                 // [F11] explicit Urdu
+                voice_settings: {
+                  stability:         0.75,            // consistent Urdu accent
+                  similarity_boost:  0.85,            // stay close to voice character
+                  style:             0.4,             // natural, not over-dramatic
+                  use_speaker_boost: true             // clearer output
+                }
+              })
             });
-            if(tr.ok)console.log('[D OK] id:',msgId||'n/a');
-            else{const e=await tr.text().catch(()=>'');console.error('[D FAIL]',tr.status,e.slice(0,80));}
-          }
 
-        } // end messages loop
-      } catch(err) { console.error('[FATAL]:', err.message, err.stack); }
+            if (ttsRes.ok) {
+              const arrayBuffer   = await ttsRes.arrayBuffer();
+              const mediaFormData = new globalThis.FormData();
+              const audioBlob     = new globalThis.Blob([arrayBuffer], { type: 'audio/mpeg' });
+              mediaFormData.append('messaging_product', 'whatsapp');
+              mediaFormData.append('file', audioBlob, 'voice.mp3');
+              mediaFormData.append('type', 'audio/mpeg');
+
+              const uploadRes  = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
+                method:  'POST',
+                headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
+                body:    mediaFormData
+              });
+              const uploadData = await uploadRes.json();
+
+              if (uploadData?.id) {
+                const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+                  method:  'POST',
+                  headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    messaging_product: 'whatsapp',
+                    recipient_type:    'individual',
+                    to:                fromNumber,
+                    type:              'audio',
+                    audio:             { id: uploadData.id }
+                  })
+                });
+                if (sendVoiceRes.ok) {
+                  voiceSentSuccess = true;
+                  console.log('[STEP C SUCCESS] Voice note sent!');
+                } else {
+                  const errBody = await sendVoiceRes.text();
+                  console.error('[STEP C FAIL] Voice send:', errBody.slice(0,150));
+                }
+              } else {
+                console.error('[STEP C FAIL] Upload failed:', JSON.stringify(uploadData));
+              }
+
+            } else if (ttsRes.status === 429) {
+              // [F17] 429 → clean text fallback (was crashing before)
+              console.warn('[STEP C] ElevenLabs quota 429 — falling back to text');
+            } else {
+              console.error('[STEP C FAIL] ElevenLabs status:', ttsRes.status);
+            }
+          } catch (err) {
+            console.error('[STEP C ERROR]:', err.message);
+          }
+        }
+
+        // ── STEP D: Text Fallback (only if voice NOT sent) ────────────────
+        if (!voiceSentSuccess && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+          const textRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+            method:  'POST',
+            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              messaging_product: 'whatsapp',
+              recipient_type:    'individual',
+              to:                fromNumber,
+              type:              'text',
+              text:              { preview_url: false, body: aiReply }
+            })
+          });
+          if (textRes.ok) console.log('[STEP D SUCCESS] Text message sent.');
+          else { const e=await textRes.text().catch(()=>''); console.error('[STEP D FAIL]:', textRes.status, e.slice(0,150)); }
+        }
+
+      } catch (err) {
+        console.error('[FATAL ERROR]:', err.message, err.stack);
+      }
     })();
 
-    if(waitUntilFn){waitUntilFn(proc);return res.status(200).send('EVENT_RECEIVED');}
-    await proc;
+    // [F2] Send 200 to Meta immediately, keep processing in background
+    if (waitUntilFn) { waitUntilFn(processPromise); return res.status(200).send('EVENT_RECEIVED'); }
+    await processPromise;
     return res.status(200).send('EVENT_RECEIVED');
   }
 
-  return res.status(405).send('Method Not Allowed');
+  res.status(405).send('Method Not Allowed');
 };
