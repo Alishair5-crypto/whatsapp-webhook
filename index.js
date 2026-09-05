@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//   BASE: Fully Audited Production Version (Complete Full Code File)
+//   BASE: Fully Audited Production Version (DB JSON Fix & Token Limit Increased)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -50,9 +50,10 @@ async function dbSave(dbUrl, phone, customerName, history) {
   const sql = getSql(dbUrl); if (!sql) return;
   try {
     const trimmedHistory = history.slice(-20);
+    // Fixed: explicitly stringifying and casting to jsonb for PostgreSQL
     await sql`
       INSERT INTO zara_conversations(phone_number, customer_name, history, last_seen, msg_count) 
-      VALUES (${phone}, ${customerName || ''}, ${trimmedHistory}, NOW()::timestamptz, ${history.length}) 
+      VALUES (${phone}, ${customerName || ''}, ${JSON.stringify(trimmedHistory)}::jsonb, NOW()::timestamptz, ${history.length}) 
       ON CONFLICT(phone_number) 
       DO UPDATE SET 
         customer_name = EXCLUDED.customer_name, 
@@ -114,7 +115,7 @@ function getPKT() {
   } catch(e) { return 'PKT unavailable'; }
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function oaiChat({url,key,model,messages,maxTokens=800,timeout=20000}) {
+async function oaiChat({url,key,model,messages,maxTokens=1200,timeout=20000}) {
   const ctrl=new AbortController(), t=setTimeout(()=>ctrl.abort(),timeout);
   try { return await fetch(`${url}/chat/completions`,{method:'POST',signal:ctrl.signal,headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature:0.7,max_tokens:maxTokens})}); }
   finally { clearTimeout(t); }
@@ -142,31 +143,31 @@ module.exports = async (req, res) => {
   const GOOGLE_SA_EMAIL     = (process.env.GOOGLE_SA_EMAIL     || '').trim();
   const GOOGLE_SA_KEY       = (process.env.GOOGLE_SA_KEY       || '').trim();
 
-  // ── Strict System Prompt with Multi-Turn Order Chain Memory ────────────────
-  const SYSTEM_PROMPT = `You are Zara — a warm, human-speaking team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI or automation.
+  // ── Strict System Prompt with Multi-Turn Order Chain Memory & Natural Talfuz ──
+  const SYSTEM_PROMPT = `You are Zara — a warm, human-speaking boutique staff member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI or automation.
 
 CURRENT TIME (Asia/Karachi): ${getPKT()}
 
 === IDENTITY & TONE ===
 - Name: Zara — Fatima Arts team member
-- Tone: warm, friendly, polite — like a helpful local boutique staff member
-- Use customer's name in conversation when available
-- Max 2-3 emojis per message
+- Tone: Extremely warm, polite, natural Pakistani boutique sales representative style.
+- Use customer's name respectfully (e.g. bhai, sister, or name) when available.
+- Max 2 emojis per message. Keep sentences clear and complete (do not cut off mid-sentence).
 
 === LANGUAGE & TALFUZ (STRICT) ===
-- Main Language: **Pure Roman Urdu / Urdu** (Pakistani cultural tone).
-- If customer writes in Roman Urdu or Urdu script, reply in **100% pure Roman Urdu / Urdu**. Do not mix unnecessary English words.
-- Natural phonetic Roman Urdu for ElevenLabs voice note pronunciation (e.g., "kaise hain aap").
+- Main Language: **Pure, natural Roman Urdu** (Pakistani cultural style). Speak fluently like a real local person in Faisalabad/Lahore.
+- Avoid robotic or awkward English phrases. Use natural conversational expressions (e.g., "G bilkul", "Ji zaroor", "Aap ko kis cheez ki samajh nahi aayi").
+- Phonetic pronunciation friendly for ElevenLabs voice notes.
 
 === ORDER & CONVERSATION CHAIN (CRITICAL) ===
-- **Memory Retention:** Always remember what the customer asked in previous turns (e.g., if they asked for a red suit or specific lawn dress, keep that context active in your mind). Never ask for the same detail twice.
-- **Step-by-Step Order Collection:** When a customer wants to place an order, collect details actively one by one if missing:
-  1. Product & Color confirmation (e.g., Red unstitched suit)
-  2. Quantity (kitne suit chahiye?)
-  3. Full Delivery Address & City (e.g., House #, Street, Faisalabad)
+- **Memory Retention:** Always remember what the customer asked in previous messages (e.g., if they asked for a red marina suit earlier, maintain that exact context). Never ask for details already provided.
+- **Step-by-Step Order Flow:** If customer wants to order, collect missing details one by one smoothly:
+  1. Product & Color confirmation
+  2. Quantity (kitne suits chahiye?)
+  3. Full Delivery Address & City (House #, Street, Area)
   4. Payment Method (COD / JazzCash / EasyPaisa)
-- **Active Follow-up:** Do not give a generic welcome message if an order discussion is already ongoing. Continue the conversation naturally from where it left off.
-- **Order Tag:** Only generate the \`[ORDER:...]\` tag when ALL required details (Product, Qty, Price, Payment, Address, City) are fully collected from the customer.
+- **Active Context:** Never restart with a generic welcome greeting if an ongoing conversation or order discussion is already happening. Continue naturally.
+- **Order Tag:** Only generate the \`[ORDER:...]\` tag when ALL required details (Product, Qty, Price, Payment, Address, City) are fully confirmed.
 
 === CITY NAMES ===
 ⚠️ Faisalabad (NOT Faizabad) — always spell correctly.
@@ -285,7 +286,7 @@ If order fully confirmed, include this tag on its own line:
 
       let aiReply = '';
 
-      // ── STEP B: AI CHAIN ──────────────────────────────────────────────
+      // ── STEP B: AI CHAIN (Increased maxOutputTokens to prevent cutting) ────
       if (!aiReply && GEMINI_API_KEY) {
         for (const model of ['gemini-3.7-flash', 'gemini-3.6-flash']) {
           if (aiReply) break;
@@ -300,7 +301,7 @@ If order fully confirmed, include this tag on its own line:
               const r = await fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
                 { method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
-                  body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:800}}) }
+                  body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:1200}}) }
               );
               if (r.ok) {
                 const d   = await r.json();
@@ -322,7 +323,7 @@ If order fully confirmed, include this tag on its own line:
       // Cerebras fallback
       if (!aiReply && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
         try {
-          const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages});
+          const r = await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages,maxTokens:1200});
           if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); }
           else if (r.status===429) blockFor('cerebras',5*60*1000);
         } catch(e) {}
@@ -339,7 +340,7 @@ If order fully confirmed, include this tag on its own line:
       aiReply = fixCities(aiReply);
       if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
 
-      // Update history and save to Neon DB
+      // Update history and save safely to Neon DB
       history.push({ role: 'user',  parts: [{ text: userMessageText }] });
       history.push({ role: 'model', parts: [{ text: aiReply }] });
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
