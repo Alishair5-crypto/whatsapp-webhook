@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-webhook",
   "version": "1.0.0",
-  "description": "Fatima Arts — Zara AI Agent (WhatsApp webhook)",
+  "description": "Fatima Arts — Zara AI Agent",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
