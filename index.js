@@ -1,6 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //   WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//   BASE: Fully Audited & Tested Production Version (Media Upload Fixed)
+//   BASE: Fully Audited Production Version (Complete Full Code File)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -9,7 +9,6 @@ if (!global._cb) global._cb = new Map();
 const isBlocked = k      => Date.now() < (global._cb.get(k) || 0);
 const blockFor  = (k, ms) => { global._cb.set(k, Date.now() + ms); console.warn(`[CB] ${k} blocked ${Math.round(ms/1000)}s`); };
 
-// Midnight PKT reset — daily quota refills at midnight
 function midnightReset() {
   try {
     const pkt = new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Karachi',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date());
@@ -29,7 +28,7 @@ function alreadyProcessed(msgId) {
   return false;
 }
 
-// ── Neon DB — optional persistent memory ─────────────────────────────────────
+// ── Neon DB — Persistent Memory ──────────────────────────────────────────────
 let _sql = null;
 function getSql(dbUrl) {
   if (!dbUrl || !dbUrl.startsWith('postgres')) return null;
@@ -47,14 +46,26 @@ async function dbGet(dbUrl, phone) {
   return null;
 }
 async function dbSave(dbUrl, phone, customerName, history) {
-  _dbCache.set(phone, {history,customerName});
+  _dbCache.set(phone, {history, customerName});
   const sql = getSql(dbUrl); if (!sql) return;
   try {
-    await sql`INSERT INTO zara_conversations(phone_number,customer_name,history,last_seen,msg_count) VALUES(${phone},${customerName||''},${JSON.stringify(history.slice(-20))}::jsonb,NOW()::timestamptz,${history.length}) ON CONFLICT(phone_number) DO UPDATE SET customer_name=EXCLUDED.customer_name,history=EXCLUDED.history,last_seen=NOW()::timestamptz,msg_count=EXCLUDED.msg_count`;
-  } catch(e) { console.error('[DB SAVE]',e.message); }
+    const trimmedHistory = history.slice(-20);
+    await sql`
+      INSERT INTO zara_conversations(phone_number, customer_name, history, last_seen, msg_count) 
+      VALUES (${phone}, ${customerName || ''}, ${trimmedHistory}, NOW()::timestamptz, ${history.length}) 
+      ON CONFLICT(phone_number) 
+      DO UPDATE SET 
+        customer_name = EXCLUDED.customer_name, 
+        history = EXCLUDED.history, 
+        last_seen = NOW()::timestamptz, 
+        msg_count = EXCLUDED.msg_count
+    `;
+    console.log('[DB SAVE] Success for:', phone);
+  } catch(e) { 
+    console.error('[DB SAVE ERROR DETAIL]:', e.message, e.detail || ''); 
+  }
 }
 
-// ── City name correction (Whisper STT common errors) ─────────────────────────
 const CITY_FIX = {
   faizabad:'Faisalabad', faizaabad:'Faisalabad', faisalabaad:'Faisalabad',
   faisalbad:'Faisalabad', fisalabad:'Faisalabad', lahroe:'Lahore',
@@ -63,7 +74,7 @@ const CITY_FIX = {
 };
 const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()] || w) : t;
 
-// ── Google Sheets (optional) ──────────────────────────────────────────────────
+// ── Google Sheets ─────────────────────────────────────────────────────────────
 let _gToken = { token:null, exp:0 };
 async function getGToken(email, key) {
   if (_gToken.token && Date.now() < _gToken.exp-300000) return _gToken.token;
@@ -95,7 +106,6 @@ async function saveToSheet(sid, email, key, order, phone) {
   } catch(e) { console.error('[SHEET]',e.message); }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 function getPKT() {
   try {
     const p={};
@@ -110,7 +120,6 @@ async function oaiChat({url,key,model,messages,maxTokens=800,timeout=20000}) {
   finally { clearTimeout(t); }
 }
 
-// ── In-memory history ────────────────────────────────────────────────────────
 const chatHistories = new Map();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -118,7 +127,6 @@ module.exports = async (req, res) => {
   if (req.url?.includes('favicon.ico')) return res.status(204).end();
   midnightReset();
 
-  // ── Env vars ──────────────────────────────────────────────────────────────
   const WHATSAPP_TOKEN      = (process.env.WHATSAPP_TOKEN      || '').trim();
   const PHONE_NUMBER_ID     = (process.env.PHONE_NUMBER_ID     || '').trim();
   const VERIFY_TOKEN        = (process.env.VERIFY_TOKEN        || '').trim();
@@ -129,95 +137,52 @@ module.exports = async (req, res) => {
   const JAZZCASH_NUMBER     = (process.env.JAZZCASH_NUMBER     || '').trim();
   const EASYPAISA_NUMBER    = (process.env.EASYPAISA_NUMBER    || '').trim();
   const CEREBRAS_API_KEY    = (process.env.CEREBRAS_API_KEY    || '').trim();
-  const OPENROUTER_API_KEY  = (process.env.OPENROUTER_API_KEY  || '').trim();
   const DATABASE_URL        = (process.env.DATABASE_URL        || '').trim();
   const GOOGLE_SHEETS_ID    = (process.env.GOOGLE_SHEETS_ID    || '').trim();
   const GOOGLE_SA_EMAIL     = (process.env.GOOGLE_SA_EMAIL     || '').trim();
   const GOOGLE_SA_KEY       = (process.env.GOOGLE_SA_KEY       || '').trim();
 
-  // ── System Prompt with PKT time ───────────────────────────────────────────
-  const SYSTEM_PROMPT = `You are Zara — a warm, human-sounding team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or any software.
+  // ── Strict System Prompt with Multi-Turn Order Chain Memory ────────────────
+  const SYSTEM_PROMPT = `You are Zara — a warm, human-speaking team member of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI or automation.
 
 CURRENT TIME (Asia/Karachi): ${getPKT()}
 
-=== IDENTITY ===
+=== IDENTITY & TONE ===
 - Name: Zara — Fatima Arts team member
-- Tone: warm, friendly, professional — like a helpful colleague, not a call-center script
-- Use customer's name in EVERY message
+- Tone: warm, friendly, polite — like a helpful local boutique staff member
+- Use customer's name in conversation when available
 - Max 2-3 emojis per message
-- Every message must feel personal, never copy-pasted
-- If asked who you are: "میں زارا ہوں، فاطمہ آرٹس سے 😊"
 
-=== LANGUAGE — AUTO DETECT ===
-- Urdu script in    → Urdu script out
-- English in        → English out
-- Roman Urdu in     → Roman Urdu out
-- Never switch language unless customer switches first
-- Use pure Pakistani Urdu tone — not Hindi, not English accent
+=== LANGUAGE & TALFUZ (STRICT) ===
+- Main Language: **Pure Roman Urdu / Urdu** (Pakistani cultural tone).
+- If customer writes in Roman Urdu or Urdu script, reply in **100% pure Roman Urdu / Urdu**. Do not mix unnecessary English words.
+- Natural phonetic Roman Urdu for ElevenLabs voice note pronunciation (e.g., "kaise hain aap").
 
-=== TIME-BASED GREETING (use CURRENT TIME above) ===
-06:00 – 12:00 → صبح بخیر! 🌅
-12:00 – 17:00 → خیریت سے ہیں؟ ☀️
-17:00 – 21:00 → شام بخیر! ✨
-21:00 – 06:00 → السلام علیکم! (brief reply, full answer next morning)
-Use greeting only on FIRST message of conversation, not every reply.
+=== ORDER & CONVERSATION CHAIN (CRITICAL) ===
+- **Memory Retention:** Always remember what the customer asked in previous turns (e.g., if they asked for a red suit or specific lawn dress, keep that context active in your mind). Never ask for the same detail twice.
+- **Step-by-Step Order Collection:** When a customer wants to place an order, collect details actively one by one if missing:
+  1. Product & Color confirmation (e.g., Red unstitched suit)
+  2. Quantity (kitne suit chahiye?)
+  3. Full Delivery Address & City (e.g., House #, Street, Faisalabad)
+  4. Payment Method (COD / JazzCash / EasyPaisa)
+- **Active Follow-up:** Do not give a generic welcome message if an order discussion is already ongoing. Continue the conversation naturally from where it left off.
+- **Order Tag:** Only generate the \`[ORDER:...]\` tag when ALL required details (Product, Qty, Price, Payment, Address, City) are fully collected from the customer.
 
-=== CITY NAMES — IMPORTANT ===
-⚠️ Faisalabad (NOT Faizabad, NOT Faizaabad) — always spell correctly
-درست نام: Faisalabad • Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala
+=== CITY NAMES ===
+⚠️ Faisalabad (NOT Faizabad) — always spell correctly.
 
-=== CAPABILITIES ===
-You handle text messages AND voice notes (transcribed to text). Reply naturally to both.
+=== PRODUCTS (UNSTITCHED) ===
+1. Lawn/Printed, 2. Embroidered, 3. Linen/Khaddar, 4. Kotail, 5. Karandi, 6. Marina, 7. Velvet, 8. Dhanak.
+Prices: Retail 1 suit = PKR 3,600 + delivery. Wholesale min 10 suits = PKR 2,999/suit.
 
-=== PRODUCTS — ALL UNSTITCHED ===
-1. Lawn/Printed     — summer, light, breathable
-2. Embroidered      — weddings, celebrations, fancy
-3. Linen/Khaddar    — classic, mid-season comfort
-4. Kotail           — premium, formal occasions
-5. Karandi          — soft, popular mid-season
-6. Marina           — warm, cozy, winter
-7. Velvet           — rich, luxurious, winter
-8. Dhanak           — soft, warm, winter
-Always describe fabric feel + season + occasion FIRST. Price only when customer asks.
+=== PAYMENT & DELIVERY ===
+- JazzCash: ${JAZZCASH_NUMBER || 'boss se confirm karein'}
+- EasyPaisa: ${EASYPAISA_NUMBER || 'boss se confirm karein'}
+- Delivery: City 1-2 days, Outside 3-5 days.
 
-=== PRICING ===
-RETAIL (single customer):
-• 1 suit = PKR 3,600
-• Delivery charges extra
-• No minimum order
-
-WHOLESALE (shop owners):
-• Minimum 10 suits
-• PKR 2,999 per suit
-• 10 suits = PKR 29,990
-• City delivery = FREE
-• Outside city = extra charges
-
-=== PAYMENT METHODS ===
-1. JazzCash  → ${JAZZCASH_NUMBER  || 'boss se confirm karein'}
-2. EasyPaisa → ${EASYPAISA_NUMBER || 'boss se confirm karein'}
-3. COD       → payment on delivery
-• COD: confirm full address + phone number
-• JazzCash/EasyPaisa: share number, ask for screenshot
-• Screenshot received → alert boss IMMEDIATELY
-• Never confirm order until payment verified or COD set
-
-=== DELIVERY ===
-• City (شہر): 1-2 working days
-• Outside city: 3-5 working days
-• Wholesale city delivery: FREE
-• After order: ask full address → save in Notes
-
-=== ORDER PROCESS ===
-1. Alert boss: name + product + retail/wholesale
-2. Send confirmation: Product name, Price breakdown, Payment options
-3. Ask delivery address
-4. Confirm payment method
-
-If order confirmed, include this tag on its own line:
+If order fully confirmed, include this tag on its own line:
 [ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]`;
 
-  // ─── GET: Webhook Verification ───────────────────────────────────────────
   if (req.method === 'GET') {
     const protocol = req.headers['x-forwarded-proto'] || 'https';
     const host     = req.headers['x-forwarded-host'] || req.headers.host || 'localhost';
@@ -227,7 +192,6 @@ If order confirmed, include this tag on its own line:
     const challenge= url.searchParams.get('hub.challenge');
     if (mode && token) {
       if (mode === 'subscribe' && String(token).trim() === String(VERIFY_TOKEN).trim()) {
-        console.log('[VERIFICATION SUCCESS] Webhook verified');
         return res.status(200).send(challenge);
       }
       return res.status(403).send('Verification Token Mismatch');
@@ -235,7 +199,6 @@ If order confirmed, include this tag on its own line:
     return res.status(200).send('Webhook Endpoint Active');
   }
 
-  // ─── POST: Message Handler (Sync execution) ──────────────────────────────
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) {} }
@@ -246,23 +209,17 @@ If order confirmed, include this tag on its own line:
     const contacts= Array.isArray(value?.contacts) ? value.contacts : [];
 
     if (!messages.length) return res.status(200).send('EVENT_RECEIVED');
-    if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
-      console.error('[CONFIG] Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID');
-      return res.status(200).send('EVENT_RECEIVED');
-    }
+    if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) return res.status(200).send('EVENT_RECEIVED');
 
     try {
       const message = messages[0];
       if (!message) return res.status(200).send('EVENT_RECEIVED');
 
       const msgId = message?.id;
-      if (alreadyProcessed(msgId)) {
-        console.log('[DEDUP] Already processed:', msgId);
-        return res.status(200).send('EVENT_RECEIVED');
-      }
+      if (alreadyProcessed(msgId)) return res.status(200).send('EVENT_RECEIVED');
 
       const fromNumber = message.from;
-      if (!fromNumber) { console.error('[ERROR] message.from missing'); return res.status(200).send('EVENT_RECEIVED'); }
+      if (!fromNumber) return res.status(200).send('EVENT_RECEIVED');
 
       const isAudioIncoming = message.type === 'audio' || message.type === 'voice';
       const contact       = contacts.find(c => c?.wa_id === fromNumber) || contacts[0] || null;
@@ -270,37 +227,22 @@ If order confirmed, include this tag on its own line:
 
       let userMessageText = '';
 
-      // ── STEP A: Text Extract or Groq Whisper Transcription ────────────
+      // ── STEP A: Transcription / Text Extract ──────────────────────────
       if (message.type === 'text') {
         userMessageText = fixCities(message.text?.body || '');
-
       } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
-        console.log('[STEP A] Fetching audio from Meta...');
         const mediaId = message.audio?.id || message.voice?.id;
-
         if (!mediaId) {
           userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
         } else {
-          const mediaRes  = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
-            headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
-          });
-          if (!mediaRes.ok) {
-            console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
-            userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-          } else {
+          const mediaRes  = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } });
+          if (mediaRes.ok) {
             const mediaData = await mediaRes.json();
-            if (!mediaData.url) {
-              console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
-              userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-            } else {
-              const audioStream = await fetch(mediaData.url, {
-                headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` }
-              });
+            if (mediaData.url) {
+              const audioStream = await fetch(mediaData.url, { headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` } });
               const arrayBuffer = await audioStream.arrayBuffer();
-
               const formData = new globalThis.FormData();
-              const blob     = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
-              formData.append('file',     blob, 'voice.ogg');
+              formData.append('file',     new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' }), 'voice.ogg');
               formData.append('model',    'whisper-large-v3-turbo');
               formData.append('language', 'ur');
               formData.append('prompt',   'فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad (NOT Faizabad)، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک، کپڑے کی دکان');
@@ -310,29 +252,21 @@ If order confirmed, include this tag on its own line:
                 headers: { 'Authorization': `Bearer ${GROQ_API_KEY}` },
                 body:    formData
               });
-
               if (groqRes.ok) {
                 const groqData  = await groqRes.json();
                 userMessageText = fixCities((groqData.text || '').trim());
-                console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0, 80));
-              } else {
-                console.error('[STEP A FAIL] Groq status:', groqRes.status);
-                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
               }
             }
           }
         }
-      } else {
-        userMessageText = '[Customer ne kuch bheja — poochein kya chahiye]';
       }
-
       if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
 
-      // ── Load conversation history ─────────────────────────────────────
+      // ── Load full conversation history from Neon DB (Fallback to Memory) ──
       let history = [];
       const dbData = await dbGet(DATABASE_URL, fromNumber);
-      if (dbData) {
-        history = dbData.history || [];
+      if (dbData && Array.isArray(dbData.history)) {
+        history = dbData.history;
       } else {
         if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, []);
         history = chatHistories.get(fromNumber);
@@ -353,8 +287,7 @@ If order confirmed, include this tag on its own line:
 
       // ── STEP B: AI CHAIN ──────────────────────────────────────────────
       if (!aiReply && GEMINI_API_KEY) {
-        const models = ['gemini-3.7-flash', 'gemini-3.6-flash'];
-        for (const model of models) {
+        for (const model of ['gemini-3.7-flash', 'gemini-3.6-flash']) {
           if (aiReply) break;
           const cbKey = `g:${model}`;
           if (isBlocked(cbKey)) continue;
@@ -364,7 +297,6 @@ If order confirmed, include this tag on its own line:
             const controller = new AbortController();
             const timeoutId  = setTimeout(() => controller.abort(), 20000);
             try {
-              console.log(`[STEP B] Querying ${model} (attempt ${attempt})...`);
               const r = await fetch(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
                 { method:'POST', headers:{'Content-Type':'application/json'}, signal:controller.signal,
@@ -374,15 +306,13 @@ If order confirmed, include this tag on its own line:
                 const d   = await r.json();
                 const raw = d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
                 if (raw) aiReply = raw.replace(/[*_~`#]/g,'').trim();
-                console.log(`[STEP B SUCCESS] ${model} (attempt ${attempt})`);
                 break;
               }
               if (r.status === 429) { blockFor(cbKey, 5*60*1000); break; }
               if (r.status === 503 && attempt < 2) { await sleep(2000); continue; }
               break;
             } catch(e) {
-              const isAbort = e?.name==='AbortError' || String(e?.message||'').includes('abort');
-              if (isAbort && attempt < 2) { await sleep(2000); continue; }
+              if (attempt < 2) { await sleep(2000); continue; }
               break;
             } finally { clearTimeout(timeoutId); }
           }
@@ -398,22 +328,7 @@ If order confirmed, include this tag on its own line:
         } catch(e) {}
       }
 
-      // Groq LLM fallback
-      if (!aiReply && GROQ_API_KEY) {
-        for (const gm of ['openai/gpt-oss-120b', 'qwen/qwen3.6-27b']) {
-          if (aiReply) break;
-          const cbKey = `gr:${gm}`; if (isBlocked(cbKey)) continue;
-          try {
-            const r = await oaiChat({url:'https://api.groq.com/openai/v1',key:GROQ_API_KEY,model:gm,messages:oaiMessages});
-            if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); break; }
-            if (r.status===429) { blockFor(cbKey,5*60*1000); break; }
-          } catch(e) { break; }
-        }
-      }
-
-      if (!aiReply) {
-        aiReply = 'Thori dair mein wapas aati hoon, abhi system busy hai. Shukriya sabr ka 🙏';
-      }
+      if (!aiReply) aiReply = 'Thori dair mein wapas aati hoon, abhi system busy hai. Shukriya sabr ka 🙏';
 
       const orderTag = parseOrderTag(aiReply);
       if (orderTag) {
@@ -424,6 +339,7 @@ If order confirmed, include this tag on its own line:
       aiReply = fixCities(aiReply);
       if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
 
+      // Update history and save to Neon DB
       history.push({ role: 'user',  parts: [{ text: userMessageText }] });
       history.push({ role: 'model', parts: [{ text: aiReply }] });
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
@@ -431,104 +347,57 @@ If order confirmed, include this tag on its own line:
       chatHistories.set(fromNumber, history);
       dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
 
-      // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note (FIXED 2-STEP UPLOAD) ─
+      // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note (2-Step Upload) ────
       let voiceSentSuccess = false;
 
       if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
         try {
-          console.log('[STEP C] Converting to voice via ElevenLabs...');
           const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
             method:  'POST',
-            headers: {
-              'xi-api-key':   ELEVENLABS_API_KEY,
-              'Content-Type': 'application/json',
-              'Accept':       'audio/mpeg'
-            },
-            body: JSON.stringify({
-              text:           aiReply,
-              model_id:       'eleven_flash_v2_5',
-              voice_settings: {
-                stability:        0.75,
-                similarity_boost: 0.85
-              }
-            })
+            headers: { 'xi-api-key': ELEVENLABS_API_KEY, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
+            body: JSON.stringify({ text: aiReply, model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.75, similarity_boost: 0.85 } })
           });
 
-          if (!ttsRes.ok) {
-            const errText = await ttsRes.text();
-            console.error(`[STEP C FAIL] ElevenLabs status: ${ttsRes.status} - ${errText}`);
-          } else {
+          if (ttsRes.ok) {
             const audioBuffer = await ttsRes.arrayBuffer();
             const audioBlob   = new globalThis.Blob([audioBuffer], { type: 'audio/mpeg' });
 
-            // STEP 1: Upload audio to WhatsApp Media Endpoint to get media_id
             const mediaFormData = new globalThis.FormData();
             mediaFormData.append('messaging_product', 'whatsapp');
             mediaFormData.append('file', audioBlob, 'response.mp3');
             mediaFormData.append('type', 'audio/mpeg');
 
-            console.log('[STEP C] Uploading audio to WhatsApp Media endpoint...');
             const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
               method:  'POST',
               headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}` },
               body:    mediaFormData
             });
 
-            if (!uploadRes.ok) {
-              const uploadErr = await uploadRes.text();
-              console.error('[STEP C FAIL] WhatsApp Media Upload:', uploadErr);
-            } else {
+            if (uploadRes.ok) {
               const uploadData = await uploadRes.json();
               const mediaId = uploadData?.id;
 
-              if (!mediaId) {
-                console.error('[STEP C FAIL] Media ID not returned:', JSON.stringify(uploadData));
-              } else {
-                // STEP 2: Send message using media ID JSON object
-                console.log('[STEP C] Sending audio message with media ID:', mediaId);
+              if (mediaId) {
                 const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
                   method:  'POST',
-                  headers: { 
-                    'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
-                    'Content-Type': 'application/json'
-                  },
-                  body:    JSON.stringify({
-                    messaging_product: 'whatsapp',
-                    recipient_type: 'individual',
-                    to: fromNumber,
-                    type: 'audio',
-                    audio: { id: mediaId }
-                  })
+                  headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
+                  body:    JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: fromNumber, type: 'audio', audio: { id: mediaId } })
                 });
 
-                if (sendVoiceRes.ok) {
-                  voiceSentSuccess = true;
-                  console.log('[STEP C SUCCESS] Voice note sent to WhatsApp ✓');
-                } else {
-                  const sendErr = await sendVoiceRes.text();
-                  console.error('[STEP C FAIL] WhatsApp Audio Send:', sendErr);
-                }
+                if (sendVoiceRes.ok) voiceSentSuccess = true;
               }
             }
           }
-        } catch (e) {
-          console.error('[STEP C EXCEPTION]', e.message);
-        }
+        } catch (e) {}
       }
 
-      // Fallback to text message if voice note was not sent or customer sent text
+      // Fallback to text message
       if (!voiceSentSuccess) {
-        const textRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+        await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
           method:  'POST',
           headers: { 'Authorization': `Bearer ${WHATSAPP_TOKEN}`, 'Content-Type': 'application/json' },
           body:    JSON.stringify({ messaging_product: 'whatsapp', to: fromNumber, type: 'text', text: { body: aiReply } })
         });
-        if (textRes.ok) {
-          console.log('[STEP D SUCCESS] Text message sent ✓');
-        } else {
-          const textErr = await textRes.text();
-          console.error('[STEP D FAIL] Text send error:', textErr);
-        }
       }
 
     } catch (err) {
