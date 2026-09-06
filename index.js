@@ -1,8 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Microsoft Azure TTS Version)
+//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (ElevenLabs Version)
 //  Required Env Vars:
 //  WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN
-//  GEMINI_API_KEY, GROQ_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION
+//  GEMINI_API_KEY, GROQ_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
 //  JAZZCASH_NUMBER, EASYPAISA_NUMBER, DATABASE_URL
 //  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,21 +146,21 @@ module.exports = async (req, res) => {
   if (req.url?.includes('favicon.ico')) return res.status(204).end();
   midnightReset();
 
-  const WHATSAPP_TOKEN      = (process.env.WHATSAPP_TOKEN      ||'').trim();
-  const PHONE_NUMBER_ID     = (process.env.PHONE_NUMBER_ID     ||'').trim();
-  const VERIFY_TOKEN        = (process.env.VERIFY_TOKEN        ||'').trim();
-  const GEMINI_API_KEY      = (process.env.GEMINI_API_KEY      ||'').trim();
-  const GROQ_API_KEY        = (process.env.GROQ_API_KEY        ||'').trim();
-  const AZURE_SPEECH_KEY    = (process.env.AZURE_SPEECH_KEY    ||'').trim();
-  const AZURE_SPEECH_REGION = (process.env.AZURE_SPEECH_REGION ||'eastus').trim();
-  const JAZZCASH_NUMBER     = (process.env.JAZZCASH_NUMBER     ||'').trim();
-  const EASYPAISA_NUMBER    = (process.env.EASYPAISA_NUMBER    ||'').trim();
-  const CEREBRAS_API_KEY    = (process.env.CEREBRAS_API_KEY    ||'').trim();
-  const OPENROUTER_API_KEY  = (process.env.OPENROUTER_API_KEY  ||'').trim();
-  const DATABASE_URL        = (process.env.DATABASE_URL        ||'').trim();
-  const GOOGLE_SHEETS_ID    = (process.env.GOOGLE_SHEETS_ID    ||'').trim();
-  const GOOGLE_SA_EMAIL     = (process.env.GOOGLE_SA_EMAIL     ||'').trim();
-  const GOOGLE_SA_KEY       = (process.env.GOOGLE_SA_KEY       ||'').trim();
+  const WHATSAPP_TOKEN     = (process.env.WHATSAPP_TOKEN     ||'').trim();
+  const PHONE_NUMBER_ID    = (process.env.PHONE_NUMBER_ID    ||'').trim();
+  const VERIFY_TOKEN       = (process.env.VERIFY_TOKEN       ||'').trim();
+  const GEMINI_API_KEY     = (process.env.GEMINI_API_KEY     ||'').trim();
+  const GROQ_API_KEY       = (process.env.GROQ_API_KEY       ||'').trim();
+  const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY ||'').trim();
+  const ELEVENLABS_VOICE_ID= (process.env.ELEVENLABS_VOICE_ID||'EXAVITQu4vr4xnSDxMaL').trim();
+  const JAZZCASH_NUMBER    = (process.env.JAZZCASH_NUMBER    ||'').trim();
+  const EASYPAISA_NUMBER   = (process.env.EASYPAISA_NUMBER   ||'').trim();
+  const CEREBRAS_API_KEY   = (process.env.CEREBRAS_API_KEY   ||'').trim();
+  const OPENROUTER_API_KEY = (process.env.OPENROUTER_API_KEY ||'').trim();
+  const DATABASE_URL       = (process.env.DATABASE_URL       ||'').trim();
+  const GOOGLE_SHEETS_ID   = (process.env.GOOGLE_SHEETS_ID   ||'').trim();
+  const GOOGLE_SA_EMAIL    = (process.env.GOOGLE_SA_EMAIL    ||'').trim();
+  const GOOGLE_SA_KEY      = (process.env.GOOGLE_SA_KEY      ||'').trim();
 
   // ── GET: Webhook Verification ───────────────────────────────────────────
   if (req.method === 'GET') {
@@ -210,7 +210,7 @@ module.exports = async (req, res) => {
         if (!fromNumber) { console.error('[ERROR] message.from missing'); return; }
 
         const isAudioIncoming = message.type==='audio' || message.type==='voice';
-        const contact       = contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null;
+        const contact         = contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null;
         const customerName    = (contact?.profile?.name||'').trim();
 
         // ── Load history ───────────────────────────────────────────────
@@ -257,7 +257,7 @@ module.exports = async (req, res) => {
                 formData.append('file',     blob, 'voice.ogg');
                 formData.append('model',    'whisper-large-v3-turbo');
                 formData.append('language', 'ur');
-                formData.append('prompt', 'فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک، کپڑے کی دکان');
+                formData.append('prompt', 'Fatima Arts, Zara, Faisalabad, Lahore, Karachi, lawn, khaddar, marina, velvet, price, delivery, pakistani customer');
 
                 const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
                   method:'POST', headers:{ Authorization: `Bearer ${GROQ_API_KEY}` }, body: formData
@@ -279,59 +279,51 @@ module.exports = async (req, res) => {
           else if (message.type==='document') { userMessageText='[Customer ne document bheja — poochein kya chahiye]'; }
           else                                { userMessageText='[Customer ne kuch bheja — poochein kya chahiye]'; }
 
-        if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
+        if (!userMessageText.trim()) userMessageText = 'Assalam o Alaikum';
 
-        // ── System Prompt (Microsoft Azure supports native Urdu script nicely) ──
-        const SYSTEM_PROMPT = `آپ زارہ ہیں — فاطمہ آرٹس (Fatima Arts) کی گرم جوش سیلز ایجنٹ، پاکستان کا ایک premium unstitched fabric brand۔ آپ روبوٹ نہیں ہیں۔ کبھی AI، automation یا software کا ذکر نہ کریں۔
+        // ── System Prompt (For ElevenLabs: Roman Urdu is mandatory for accurate pronunciation) ──
+        const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts ki warm sales agent, Pakistan ka premium unstitched fabric brand. Aap robot nahi hain. Kabhi AI, automation ya software ka zikr na karein.
 
-ابھی کا وقت (PKT): ${getPKT()}
+Current time (PKT): ${getPKT()}
 
-=== زبان اور جواب کا طریقہ ===
-ہمیشہ خوبصورت اردو script (اردو حروف میں) میں جواب دیں (جیسے: "جی آپی، فاطمہ آرٹس میں خوش آمدید 😊")۔
-لہجہ: خالص پاکستانی اردو — نہ ہندی لہجہ، نہ انگریزی accent
+=== LANGUAGE & RESPONSE STYLE ===
+Hamesha **Roman Urdu** (English letters) mein jawab dein (jaise: "Ji api, Fatima Arts mein خوش آمدید 😊 likhne ki bajaye "Ji api, Fatima Arts mein khush amdeed 😊"). ElevenLabs voice ke liye Roman Urdu zaroori hai taake accent theek rahe.
+Lehjha: Khaalis Pakistani Urdu — dostana aur professional.
 
-=== شہروں کے نام (لازمی درست لکھیں) ===
-⚠️ Faisalabad (کبھی Faizabad یا Faizaabad نہیں لکھنا)
-Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Peshawar • Quetta
+=== CITIES (Strict spelling) ===
+Faisalabad (Kabhi Faizabad nahi), Lahore, Karachi, Islamabad, Rawalpindi, Multan, Gujranwala, Peshawar, Quetta.
 
-=== پہچان ===
-نام: زارہ — فاطمہ آرٹس ٹیم ممبر
-لہجہ: گرم، دوستانہ، پیشہ ورانہ — ہمدرد ساتھی کی طرح
-ہر پیغام میں customer کا نام استعمال کریں (اگر معلوم ہو)
-زیادہ سے زیادہ 2-3 emojis فی پیغام
-اگر پوچھیں: "میں زارا ہوں، فاطمہ آرٹس سے 😊"
+=== IDENTITY ===
+Name: Zara — Fatima Arts team member
+Har message mein customer ka name use karein (agar maloom ho).
+Max 2-3 emojis per message.
 
-=== وقت کی بنیاد پر سلام (PKT وقت اوپر دیکھیں) ===
-06:00–12:00 → صبح بخیر! 🌅
-12:00–17:00 → خیریت سے ہیں؟ ☀️
-17:00–21:00 → شام بخیر! ✨
-21:00–06:00 → السلام علیکم! (مختصر جواب، کل صبح مکمل)
+=== TIME-BASED GREETING ===
+06:00–12:00 → Subah bakhair! 🌅
+12:00–17:00 → Khariyat se hain? ☀️
+17:00–21:00 → Sham bakhair! ✨
+21:00–06:00 → Assalam o Alaikum! (Mukhtasar jawab)
 
-=== موسم کی ترجیح ===
-سردی (نومبر–فروری): مارینہ، ویلوٹ، دھنک، کرندی پہلے بتائیں
-گرمی (اپریل–ستمبر): لان، لنن، پرنٹڈ سوٹ پہلے بتائیں
+=== PRODUCTS (All Unstitched) ===
+1. Lawn/Printed • 2. Embroidered • 3. Linen/Khaddar • 4. Cottel • 5. Karandi • 6. Marina • 7. Velvet • 8. Dhanak
 
-=== مصنوعات (سب unstitched) ===
-1. لان/پرنٹڈ • 2. ایمبرائیڈرڈ • 3. لنن/کھدر • 4. کوٹیل • 5. کرندی • 6. مارینہ • 7. ویلوٹ • 8. دھنک
+=== PRICING ===
+Retail: 1 suit = 3,600 rupees | Delivery separate | No minimum
+Wholesale (10+ suits): 2,999/suit | 10 suits = 29,990 | City delivery free
 
-=== قیمت ===
-ریٹیل: 1 سوٹ = 3,600 روپے | ڈیلیوری الگ | کوئی minimum نہیں
-ہول سیل (10+ سوٹ): 2,999/سوٹ | 10 سوٹ = 29,990 | شہر ڈیلیوری مفت
-
-=== ادائیگی ===
+=== PAYMENT ===
 1. JazzCash   → ${JAZZCASH_NUMBER  ||'boss se confirm karein'}
 2. EasyPaisa → ${EASYPAISA_NUMBER ||'boss se confirm karein'}
-3. COD — ادائیگی ڈیلیوری پر
+3. COD — Delivery par payment
 
-=== آرڈر کا طریقہ ===
-آرڈر confirm ہونے پر یہ tag لکھیں (اپنی line پر):
+=== ORDER FORMAT ===
+Order confirm hone par yeh tag dein (apni line par):
 [ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]
 
-=== کبھی نہ کریں ===
-❌ AI/bot/automated کہنا
-❌ boss بغیر discount
-❌ competitors کا ذکر
-❌ payment/COD بغیر آرڈر confirm`;
+=== NEVER DO ===
+❌ AI/bot/automated kehna
+❌ Baghair boss ke discount dena
+❌ Competitors ka zikr karna`;
 
         const geminiContents = [
           ...history,
@@ -414,7 +406,7 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
         }
 
         if (!aiReply) {
-          aiReply = 'تھوڑی دیر میں واپس آتی ہوں، سسٹم مصروف ہے۔';
+          aiReply = 'Thori dair mein wapas aati hoon, system busy hai.';
         }
 
         const orderTag = parseOrderTag(aiReply);
@@ -424,7 +416,7 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
         }
 
         aiReply = fixCities(aiReply);
-        if (!aiReply.trim()) aiReply = 'شکریہ صبر کا 🙏';
+        if (!aiReply.trim()) aiReply = 'Shukriya sabr ka 🙏';
 
         history.push({ role:'user',  parts:[{ text:userMessageText }] });
         history.push({ role:'model', parts:[{ text:aiReply }] });
@@ -433,29 +425,24 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
         chatHistories.set(fromNumber, history);
         dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
 
-        // ── STEP C: Microsoft Azure TTS → WhatsApp Voice Note ──────────────
+        // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note ────────────────────
         let voiceSentSuccess = false;
 
-        if (isAudioIncoming && AZURE_SPEECH_KEY && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+        if (isAudioIncoming && ELEVENLABS_API_KEY && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
           try {
-            console.log('[STEP C] Microsoft Azure TTS...');
-            const ssml = `
-              <speak version='1.0' xml:lang='ur-PK'>
-                <voice name='ur-PK-UzmaNeural'>
-                  ${aiReply}
-                </voice>
-              </speak>
-            `;
-
-            const ttsRes = await fetch(`https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+            console.log('[STEP C] ElevenLabs TTS...');
+            const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
               method: 'POST',
               headers: {
-                'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
-                'Content-Type': 'application/ssml+xml',
-                'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3',
-                'User-Agent': 'WhatsAppBot'
+                'xi-api-key': ELEVENLABS_API_KEY,
+                'Content-Type': 'application/json',
+                'Accept': 'audio/mpeg'
               },
-              body: ssml
+              body: JSON.stringify({
+                text: aiReply,
+                model_id: 'eleven_multilingual_v2',
+                voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+              })
             });
 
             if (ttsRes.ok) {
@@ -482,12 +469,12 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
                 });
                 if (sendVoiceRes.ok) {
                   voiceSentSuccess = true;
-                  console.log('[STEP C SUCCESS] Microsoft Voice note sent!');
+                  console.log('[STEP C SUCCESS] ElevenLabs Voice note sent!');
                 }
               }
             } else {
               const errBody = await ttsRes.text();
-              console.error('[STEP C FAIL] Azure:', ttsRes.status, errBody.slice(0, 100));
+              console.error('[STEP C FAIL] ElevenLabs:', ttsRes.status, errBody.slice(0, 100));
             }
           } catch(e) { console.error('[STEP C EXC]', e?.message); }
         }
