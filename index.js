@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Fully Audited & Unified)
+//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Fully Audited & Fixed)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -80,7 +80,7 @@ const CITY_FIX = {
 };
 const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()]||w) : t;
 
-// ── Google Sheets Integration (Fixed Key Parsing) ─────────────────────────────
+// ── Google Sheets Integration (Fixed Endpoint & Auth) ─────────────────────────
 let _gTok = {token:null, exp:0};
 async function getGToken(email, key) {
   if (_gTok.token && Date.now() < _gTok.exp-300000) return _gTok.token;
@@ -89,7 +89,6 @@ async function getGToken(email, key) {
     const h=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));
     const p=b64(JSON.stringify({iss:email,scope:'https://www.googleapis.com/auth/spreadsheets',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
     
-    // Fix for Vercel env variable escaped newlines
     const formattedKey = key.includes('\\n') ? key.replace(/\\n/g, '\n') : key;
 
     const s=crypto.createSign('RSA-SHA256'); 
@@ -126,19 +125,37 @@ async function saveToSheet(sid, email, key, order, phone) {
       console.error('[SHEET] Failed to acquire Google OAuth token.');
       return;
     }
-    const row=[
-      new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),
-      order.name||'', phone||'', order.product||'',
-      order.qty||'', order.price||'', order.payment||'',
-      order.address||'', order.city||'', 'Pending'
+
+    const orderId = `FA-${Math.floor(100000 + Math.random() * 900000)}`;
+    const currentDate = new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' });
+
+    // Exact matching with your Google Sheet columns (A to J):
+    // Col A: Order ID | Col B: Date | Col C: Empty | Col D: Customer Name | Col E: Contact Number | Col F: Product Name | Col G: Quantity | Col H: Size | Col I: City | Col J: Payment
+    const row = [
+      orderId,
+      currentDate,
+      '',
+      order.name || 'Valued Customer',
+      phone || '',
+      order.product || 'Unstitched Suit',
+      order.qty || '1',
+      order.size || 'Unstitched',
+      order.city || '',
+      order.payment || 'COD'
     ];
-    const res=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-      {method:'POST',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});
+
+    // Using Sheet1:append for robust row insertion without range collision
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [row] })
+    });
+
     if(res.ok) {
-      console.log('[SHEET] Order successfully saved to Google Sheet ✓');
+      console.log('[SHEET] Order successfully saved to Google Sheet ✓ ID:', orderId);
     } else {
-      const e=await res.text(); 
-      console.error('[SHEET FAIL]', res.status, e.slice(0,250)); 
+      const errText = await res.text();
+      console.error('[SHEET FAIL]', res.status, errText);
     }
   } catch(e) { 
     console.error('[SHEET EXCEPTION]', e.message); 
@@ -282,7 +299,6 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
               headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
             });
             if (!mediaRes.ok) {
-              console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
               userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
             } else {
               const mediaData = await mediaRes.json();
@@ -305,7 +321,6 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
                 if (groqRes.ok) {
                   const groqData  = await groqRes.json();
                   userMessageText = fixCities((groqData.text||'').trim());
-                  console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0,80));
                 } else {
                   userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
                 }
@@ -394,7 +409,7 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
           aiReply = 'Thori dair mein wapas aati hoon, abhi system busy hai. Shukriya sabr ka 🙏';
         }
 
-        // Parse and save order with error log visibility
+        // Parse and save order
         const orderTag = parseOrderTag(aiReply);
         if (orderTag) {
           aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi,'').trim();
