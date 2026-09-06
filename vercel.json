@@ -2,14 +2,14 @@
   "version": 2,
   "builds": [
     {
-      "src": "index.js",
+      "src": "order-wrapper.js",
       "use": "@vercel/node"
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "index.js"
+      "dest": "order-wrapper.js"
     }
   ]
 }
