@@ -19,7 +19,7 @@
 //  [B14] Neon DB persistent memory (survives cold starts)
 //  [B15] Google Sheets order auto-save via [ORDER:...] tag
 //  [B16] PKT time injected into system prompt (correct time-based greetings)
-//  [B17] ElevenLabs eleven_flash_v2_5 + language_code:ur (better Urdu voice)
+//  [B17] ElevenLabs eleven_flash_v2_5 (better Urdu voice)
 //  [B18] fromNumber missing → skip safely
 //  [B19] mediaData.url missing → log + fallback (was silent)
 //  [B20] System prompt fixed — removed "Text messages only" (voice IS handled)
@@ -33,17 +33,17 @@
 //
 //  NEON TABLE (run once in Neon SQL editor):
 //  CREATE TABLE IF NOT EXISTS zara_conversations (
-//    phone_number  TEXT PRIMARY KEY,
-//    customer_name TEXT DEFAULT '',
-//    history       JSONB DEFAULT '[]',
-//    last_seen     TIMESTAMPTZ DEFAULT NOW(),
-//    msg_count     INTEGER DEFAULT 0
+//    phone_number    TEXT PRIMARY KEY,
+//    customer_name   TEXT DEFAULT '',
+//    history         JSONB DEFAULT '[]',
+//    last_seen       TIMESTAMPTZ DEFAULT NOW(),
+//    msg_count       INTEGER DEFAULT 0
 //  );
 //
 //  OPTIONAL ENV VARS:
-//  ELEVENLABS_VOICE_ID  (default: 21m00Tcm4TlvDq8ikWAM = Rachel, free)
-//  CEREBRAS_API_KEY     (extra AI fallback, free)
-//  OPENROUTER_API_KEY   (extra AI fallback, free)
+//  ELEVENLABS_VOICE_ID   (default: 21m00Tcm4TlvDq8ikWAM = Rachel, free)
+//  CEREBRAS_API_KEY      (extra AI fallback, free)
+//  OPENROUTER_API_KEY    (extra AI fallback, free)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -215,7 +215,7 @@ module.exports = async (req, res) => {
 یعنی: "جی آپی، فاطمہ آرٹس میں خوش آمدید 😊" — نہ کہ "Ji aapi, Fatima Arts mein khush aamdeed"
 
 زبان کا اصول (صرف customer کی زبان دیکھ کر فیصلہ کریں):
-1. Customer اردو script میں لکھے (مثلاً: "مجھے کپڑا چاہیے") → اردو script میں جواب دیں ✅
+1. Customer اردو script میں لکھے (مثلاً: "मुझे کپڑا چاہیے") → اردو script میں جواب دیں ✅
 2. Customer Roman Urdu میں لکھے (مثلاً: "mujhe kapra chahiye") → Roman Urdu میں جواب دیں ✅
 3. Customer English میں لکھے (مثلاً: "I want fabric") → English میں جواب دیں ✅
 4. Customer voice note بھیجے → transcribed text کی زبان دیکھ کر جواب دیں ✅
@@ -278,7 +278,7 @@ retail آرڈر → wholesale mention کریں اگر دکاندار لگے
 بغیر boss اجازت discount کبھی نہیں۔
 
 === ادائیگی ===
-1. JazzCash  → ${JAZZCASH_NUMBER  ||'boss se confirm karein'}
+1. JazzCash   → ${JAZZCASH_NUMBER  ||'boss se confirm karein'}
 2. EasyPaisa → ${EASYPAISA_NUMBER ||'boss se confirm karein'}
 3. COD — ادائیگی ڈیلیوری پر
 • COD: مکمل پتہ + فون نمبر + متبادل نمبر لیں
@@ -403,7 +403,7 @@ voice note: transcribed text کو normal message سمجھیں
         if (!fromNumber) { console.error('[ERROR] message.from missing'); return; }
 
         const isAudioIncoming = message.type==='audio' || message.type==='voice';
-        const contact         = contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null;
+        const contact       = contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null;
         const customerName    = (contact?.profile?.name||'').trim();
 
         // ── [B14] Load history from Neon or in-memory ─────────────────
@@ -605,14 +605,13 @@ voice note: transcribed text کو normal message سمجھیں
               method:'POST',
               headers: { 'xi-api-key':ELEVENLABS_API_KEY, 'Content-Type':'application/json', 'Accept':'audio/mpeg' },
               body: JSON.stringify({
-                text:          aiReply,
-                model_id:      'eleven_flash_v2_5', // [B17] better Urdu than multilingual_v2
-                language_code: 'ur',               // [B17] explicit Urdu = no English accent
+                text: aiReply,
+                model_id: 'eleven_flash_v2_5', // [B17]
                 voice_settings: {
-                  stability:         0.75,          // consistent Urdu accent
-                  similarity_boost:  0.85,          // stay close to voice character
-                  style:             0.4,           // natural, not dramatic
-                  use_speaker_boost: true           // clearer output
+                  stability: 0.75,         // consistent Urdu accent
+                  similarity_boost: 0.85,  // stay close to voice character
+                  style: 0.4,              // natural, not dramatic
+                  use_speaker_boost: true  // clearer output
                 }
               })
             });
@@ -646,38 +645,37 @@ voice note: transcribed text کو normal message سمجھیں
                   const e=await sendVoiceRes.text();
                   console.error('[STEP C FAIL] Send:', e.slice(0,150));
                 }
-              } else { console.error('[STEP C FAIL] Upload:', JSON.stringify(uploadData)); }
-
-            } else if (ttsRes.status===429) {
-              console.warn('[STEP C] ElevenLabs 429 quota → text fallback');
+              } else { console.error('[STEP C FAIL] Upload mediaData missing id:', JSON.stringify(uploadData)); }
             } else {
-              console.error('[STEP C FAIL] ElevenLabs:', ttsRes.status);
+              const errTxt = await ttsRes.text().catch(()=>'');
+              console.error('[STEP C FAIL] ElevenLabs:', ttsRes.status, errTxt.slice(0,150));
             }
-          } catch(err) { console.error('[STEP C ERROR]:', err.message); }
+          } catch(e) { console.error('[STEP C EXC]', e?.message); }
         }
 
-        // ── STEP D: Text fallback (only if voice NOT sent) ────────────
-        if (!voiceSentSuccess && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
-          const textRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+        // Fallback to text if voice failed or text incoming
+        if (!voiceSentSuccess) {
+          await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method:'POST',
             headers:{ Authorization:`Bearer ${WHATSAPP_TOKEN}`, 'Content-Type':'application/json' },
-            body: JSON.stringify({
-              messaging_product:'whatsapp', recipient_type:'individual',
-              to:fromNumber, type:'text', text:{ preview_url:false, body:aiReply }
-            })
+            body: JSON.stringify({ messaging_product:'whatsapp', to:fromNumber, type:'text', text:{ body:aiReply } })
           });
-          if (textRes.ok) console.log('[STEP D SUCCESS] Text sent. id:', message?.id||'n/a');
-          else { const e=await textRes.text().catch(()=>''); console.error('[STEP D FAIL]:', textRes.status, e.slice(0,150)); }
+          console.log('[STEP D SUCCESS] Text sent.');
         }
 
-      } catch(err) { console.error('[FATAL]:', err.message, err.stack); }
+      } catch (err) {
+        console.error('[CRITICAL ERROR]', err?.message);
+      }
     })();
 
-    // [B8] Send 200 fast, keep processing in background
-    if (waitUntilFn) { waitUntilFn(processPromise); return res.status(200).send('EVENT_RECEIVED'); }
-    await processPromise;
+    if (waitUntilFn) {
+      waitUntilFn(processPromise);
+    } else {
+      await processPromise;
+    }
+
     return res.status(200).send('EVENT_RECEIVED');
   }
 
-  res.status(405).send('Method Not Allowed');
+  return res.status(200).send('OK');
 };
