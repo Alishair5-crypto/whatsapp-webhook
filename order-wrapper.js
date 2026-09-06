@@ -6,9 +6,9 @@ const inner = require('./index.js');
 
 function explicitConfirmation(text) {
   const s = String(text || '').toLowerCase().replace(/[.!?,]/g, ' ');
-  return /(^|\s)(yes|yup|yeah|confirm|confirmed|ok|okay|haan|han|ji|bilkul|theek|thik|done|proceed)(\s|$)/i.test(s) ||
+  return /(^|\s)(yes|yup|yeah|confirm|confirmed|ok|okay|haan|han|bilkul|theek|thik|done|proceed)(\s|$)/i.test(s) ||
     /order\s+(confirm|kar|kardo|kardain|kar dein|bhej|bhej dein)/i.test(s) ||
-    /(kar\s+dein|kar\s+do|bhej\s+dein|bhej\s+do)/i.test(s) || /(^|\s)(ہاں|جی|تصدیق|ٹھیک|ٹھیک ہے|کر دیں|آرڈر کر دیں)(\s|$)/u.test(s);
+    /(kar\s+dein|kar\s+do|bhej\s+dein|bhej\s+do)/i.test(s) || /(^|\s)(ہاں|تصدیق|ٹھیک|ٹھیک ہے|کر دیں|آرڈر کر دیں)(\s|$)/u.test(s);
 }
 
 function validateRow(row) {
