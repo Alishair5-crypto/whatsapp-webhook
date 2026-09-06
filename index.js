@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Multilingual Version)
+//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Strict Multilingual Version)
 //  Required Env Vars:
 //  WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN
 //  GEMINI_API_KEY, GROQ_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
@@ -235,19 +235,19 @@ module.exports = async (req, res) => {
           const mediaId = message.audio?.id || message.voice?.id;
 
           if (!mediaId) {
-            userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
+            userMessageText = 'Voice note received — please specify your query';
           } else {
             const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
               headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
             });
             if (!mediaRes.ok) {
               console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
-              userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
+              userMessageText = 'Voice note received — please specify your query';
             } else {
               const mediaData = await mediaRes.json();
               if (!mediaData?.url) {
                 console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
-                userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
+                userMessageText = 'Voice note received — please specify your query';
               } else {
                 const audioStream = await fetch(mediaData.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
                 const arrayBuffer = await audioStream.arrayBuffer();
@@ -268,30 +268,30 @@ module.exports = async (req, res) => {
                   console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0,80));
                 } else {
                   console.error('[STEP A FAIL] Groq:', groqRes.status);
-                  userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
+                  userMessageText = 'Voice note received — please specify your query';
                 }
               }
             }
           }
 
-        } else if (message.type==='image')    { userMessageText='تصویر موصول ہوئی — پوچھیں کیا چاہیے'; }
-          else if (message.type==='sticker')  { userMessageText='اسٹیکر موصول ہوا — دوستانہ جواب دیں'; }
-          else if (message.type==='document') { userMessageText='ڈاکیومنٹ موصول ہوا — پوچھیں کیا چاہیے'; }
-          else                                { userMessageText='پیغام موصول ہوا — پوچھیں کیا چاہیے'; }
+        } else if (message.type==='image')    { userMessageText='Image received — please ask your question'; }
+          else if (message.type==='sticker')  { userMessageText='Sticker received'; }
+          else if (message.type==='document') { userMessageText='Document received'; }
+          else                                { userMessageText='Message received'; }
 
-        if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
+        if (!userMessageText.trim()) userMessageText = 'Salam';
 
-        // ── System Prompt (Multilingual with Default Urdu) ─────────────────────
+        // ── System Prompt (STRICT LANGUAGE / SCRIPT MIRRORING) ────────────────
         const SYSTEM_PROMPT = `You are Zara — the customer care and sales agent for Fatima Arts, a premium unstitched fabric brand in Pakistan. You are not a robot and should never reveal yourself as AI, a bot, or software.
 
 Current Time (PKT): ${getPKT()}
 
-=== LANGUAGE & RESPONSE STYLE (MULTILINGUAL) ===
-You are multilingual and adapt to the customer's preferred language/script naturally:
-- If the customer writes in **Urdu Script**, reply in clear and correct Urdu script.
-- If the customer writes in **Roman Urdu**, reply in natural Roman Urdu.
-- If the customer writes in **English**, reply in friendly English.
-- **Default Language:** If the language is ambiguous, default to **Urdu** (Urdu script or polite Roman Urdu).
+=== CRITICAL LANGUAGE & SCRIPT MATCHING RULES (MUST FOLLOW) ===
+You must strictly mirror the language and writing script used by the customer in their latest message:
+1. **Roman Urdu Input:** If the customer writes in Roman Urdu (e.g., "mujhe suit chahiye", "price kya hai?"), you MUST reply ONLY in natural **Roman Urdu**. DO NOT use Urdu script (اردو) under any circumstances.
+2. **Urdu Script Input:** If the customer writes in Urdu script (e.g., "مجھے سوٹ چاہیے"), you MUST reply in clear **Urdu script**.
+3. **English Input:** If the customer writes in English, you MUST reply in friendly **English**.
+4. **Default Safe Language:** If the customer's input is a sticker, image, audio, or ambiguous, default strictly to **Roman Urdu**.
 Tone: Professional, warm, and friendly Pakistani customer care.
 
 === CITY SPELLING CORRECTION ===
@@ -404,7 +404,7 @@ When an order is fully confirmed, include this tag at the very end of your messa
         }
 
         if (!aiReply) {
-          aiReply = 'تھوڑی دیر میں واپس آتی ہوں، سسٹم مصروف ہے۔ / System is busy, please wait.';
+          aiReply = 'System masroof hai, thori dair baad rabta krien.';
         }
 
         const orderTag = parseOrderTag(aiReply);
@@ -414,7 +414,7 @@ When an order is fully confirmed, include this tag at the very end of your messa
         }
 
         aiReply = fixCities(aiReply);
-        if (!aiReply.trim()) aiReply = 'شکریہ! 🙏';
+        if (!aiReply.trim()) aiReply = 'Shukriya! 🙏';
 
         history.push({ role:'user',  parts:[{ text:userMessageText }] });
         history.push({ role:'model', parts:[{ text:aiReply }] });
