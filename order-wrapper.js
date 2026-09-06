@@ -37,7 +37,9 @@ if (!global.__orderSaveGuardInstalled) {
       try {
         const data = await transcriptionResponse.clone().json();
         if (data?.text) ctx.confirmed = explicitConfirmation(data.text);
-      } catch (_) {}
+      } catch (e) {
+        console.warn('[ORDER GUARD] transcription parse failed:', e?.message);
+      }
       return transcriptionResponse;
     }
 
@@ -51,7 +53,10 @@ if (!global.__orderSaveGuardInstalled) {
       }
 
       let payload;
-      try { payload = JSON.parse(opts.body || '{}'); } catch (_) { payload = null; }
+      try { payload = JSON.parse(opts.body || '{}'); } catch (e) {
+        console.error('[ORDER GUARD] invalid Sheets request body:', e?.message);
+        payload = null;
+      }
       const row = payload?.values?.[0];
       const validationError = validateRow(row);
       if (validationError) {
@@ -96,7 +101,7 @@ if (!global.__orderSaveGuardInstalled) {
 module.exports = async (req, res) => {
   let body = req.body;
   if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch (_) {}
+    try { body = JSON.parse(body); } catch (e) { console.warn('[ORDER GUARD] request body parse failed:', e?.message); }
   }
 
   const message = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
