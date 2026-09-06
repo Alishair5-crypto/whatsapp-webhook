@@ -1,12 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  WhatsApp Webhook — Fatima Arts / Zara AI Agent
-//  Stable & Clean Version (Fixed Voice Note / ElevenLabs Pronunciation)
-//
-//  REQUIRED ENV VARS:
+//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Microsoft Azure TTS Version)
+//  Required Env Vars:
 //  WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN
-//  GEMINI_API_KEY, GROQ_API_KEY, ELEVENLABS_API_KEY
-//  JAZZCASH_NUMBER, EASYPAISA_NUMBER
-//  DATABASE_URL         ← Neon PostgreSQL
+//  GEMINI_API_KEY, GROQ_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION
+//  JAZZCASH_NUMBER, EASYPAISA_NUMBER, DATABASE_URL
 //  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
@@ -154,8 +151,8 @@ module.exports = async (req, res) => {
   const VERIFY_TOKEN        = (process.env.VERIFY_TOKEN        ||'').trim();
   const GEMINI_API_KEY      = (process.env.GEMINI_API_KEY      ||'').trim();
   const GROQ_API_KEY        = (process.env.GROQ_API_KEY        ||'').trim();
-  const ELEVENLABS_API_KEY  = (process.env.ELEVENLABS_API_KEY  ||'').trim();
-  const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID ||'21m00Tcm4TlvDq8ikWAM').trim();
+  const AZURE_SPEECH_KEY    = (process.env.AZURE_SPEECH_KEY    ||'').trim();
+  const AZURE_SPEECH_REGION = (process.env.AZURE_SPEECH_REGION ||'eastus').trim();
   const JAZZCASH_NUMBER     = (process.env.JAZZCASH_NUMBER     ||'').trim();
   const EASYPAISA_NUMBER    = (process.env.EASYPAISA_NUMBER    ||'').trim();
   const CEREBRAS_API_KEY    = (process.env.CEREBRAS_API_KEY    ||'').trim();
@@ -284,18 +281,13 @@ module.exports = async (req, res) => {
 
         if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
 
-        // ── System Prompt (Strictly enforces Roman Urdu for Voice Notes) ──
-        const languageInstruction = isAudioIncoming
-          ? `⚠️ CRITICAL VOICE NOTE RULE: Kyunke aap yeh jawab ElevenLabs voice note ke zariye bhej rahe hain, aur ElevenLabs Urdu script (اردو حروف) ko theek se pronounce nahi kar sakta, aapko LAZMI Roman Urdu mein jawab dena hai (misal ke taur par: "Ji aapi, Fatima Arts mein khush amdeed 😊"). Urdu script bilkul use mat karein.`
-          : `🔴 DEFAULT زبان: ہمیشہ اردو script (اردو حروف میں) میں جواب دیں (جیسے: "جی آپی، فاطمہ آرٹس میں خوش آمدید 😊")`;
-
+        // ── System Prompt (Microsoft Azure supports native Urdu script nicely) ──
         const SYSTEM_PROMPT = `آپ زارہ ہیں — فاطمہ آرٹس (Fatima Arts) کی گرم جوش سیلز ایجنٹ، پاکستان کا ایک premium unstitched fabric brand۔ آپ روبوٹ نہیں ہیں۔ کبھی AI، automation یا software کا ذکر نہ کریں۔
 
 ابھی کا وقت (PKT): ${getPKT()}
 
 === زبان اور جواب کا طریقہ ===
-${languageInstruction}
-
+ہمیشہ خوبصورت اردو script (اردو حروف میں) میں جواب دیں (جیسے: "جی آپی، فاطمہ آرٹس میں خوش آمدید 😊")۔
 لہجہ: خالص پاکستانی اردو — نہ ہندی لہجہ، نہ انگریزی accent
 
 === شہروں کے نام (لازمی درست لکھیں) ===
@@ -422,7 +414,7 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
         }
 
         if (!aiReply) {
-          aiReply = isAudioIncoming ? 'Thori dair mein wapas aati hoon, system busy hai.' : 'تھوڑی دیر میں واپس آتی ہوں، سسٹم مصروف ہے۔';
+          aiReply = 'تھوڑی دیر میں واپس آتی ہوں، سسٹم مصروف ہے۔';
         }
 
         const orderTag = parseOrderTag(aiReply);
@@ -432,7 +424,7 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
         }
 
         aiReply = fixCities(aiReply);
-        if (!aiReply.trim()) aiReply = isAudioIncoming ? 'Shukriya sabr ka.' : 'شکریہ صبر کا 🙏';
+        if (!aiReply.trim()) aiReply = 'شکریہ صبر کا 🙏';
 
         history.push({ role:'user',  parts:[{ text:userMessageText }] });
         history.push({ role:'model', parts:[{ text:aiReply }] });
@@ -441,25 +433,29 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
         chatHistories.set(fromNumber, history);
         dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
 
-        // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note ──────────────
+        // ── STEP C: Microsoft Azure TTS → WhatsApp Voice Note ──────────────
         let voiceSentSuccess = false;
 
-        if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+        if (isAudioIncoming && AZURE_SPEECH_KEY && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
           try {
-            console.log('[STEP C] ElevenLabs TTS...');
-            const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
-              method:'POST',
-              headers: { 'xi-api-key':ELEVENLABS_API_KEY, 'Content-Type':'application/json', 'Accept':'audio/mpeg' },
-              body: JSON.stringify({
-                text: aiReply,
-                model_id: 'eleven_multilingual_v2', // Stable model for Roman Urdu
-                voice_settings: {
-                  stability: 0.75,
-                  similarity_boost: 0.85,
-                  style: 0.4,
-                  use_speaker_boost: true
-                }
-              })
+            console.log('[STEP C] Microsoft Azure TTS...');
+            const ssml = `
+              <speak version='1.0' xml:lang='ur-PK'>
+                <voice name='ur-PK-UzmaNeural'>
+                  ${aiReply}
+                </voice>
+              </speak>
+            `;
+
+            const ttsRes = await fetch(`https://${AZURE_SPEECH_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+              method: 'POST',
+              headers: {
+                'Ocp-Apim-Subscription-Key': AZURE_SPEECH_KEY,
+                'Content-Type': 'application/ssml+xml',
+                'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3',
+                'User-Agent': 'WhatsAppBot'
+              },
+              body: ssml
             });
 
             if (ttsRes.ok) {
@@ -486,15 +482,18 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
                 });
                 if (sendVoiceRes.ok) {
                   voiceSentSuccess = true;
-                  console.log('[STEP C SUCCESS] Voice note sent!');
+                  console.log('[STEP C SUCCESS] Microsoft Voice note sent!');
                 }
               }
+            } else {
+              const errBody = await ttsRes.text();
+              console.error('[STEP C FAIL] Azure:', ttsRes.status, errBody.slice(0, 100));
             }
           } catch(e) { console.error('[STEP C EXC]', e?.message); }
         }
 
         // Fallback to text if voice failed or text incoming
--       if (!voiceSentSuccess) {
+        if (!voiceSentSuccess) {
           await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method:'POST',
             headers:{ Authorization:`Bearer ${WHATSAPP_TOKEN}`, 'Content-Type':'application/json' },
