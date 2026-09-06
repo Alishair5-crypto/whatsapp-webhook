@@ -1,10 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Strict Multilingual Version)
-//  Required Env Vars:
-//  WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN
-//  GEMINI_API_KEY, GROQ_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
-//  JAZZCASH_NUMBER, EASYPAISA_NUMBER, DATABASE_URL
-//  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY
+//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Fully Audited & Unified)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 
@@ -12,12 +7,12 @@ const crypto = require('crypto');
 let waitUntilFn = null;
 try { const vf = require('@vercel/functions'); if (vf?.waitUntil) waitUntilFn = vf.waitUntil; } catch (_) {}
 
-// ── Circuit breaker ───────────────────────────────────────────────────────────
+// ── Circuit Breaker ───────────────────────────────────────────────────────────
 if (!global._cb) global._cb = new Map();
 const isBlocked = k      => Date.now() < (global._cb.get(k) || 0);
 const blockFor  = (k, ms) => { global._cb.set(k, Date.now() + ms); console.warn(`[CB] ${k} blocked ${Math.round(ms/1000)}s`); };
 
-// ── Midnight PKT reset ────────────────────────────────────────────────────────
+// ── Midnight PKT Reset ────────────────────────────────────────────────────────
 function midnightReset() {
   try {
     const pkt = new Intl.DateTimeFormat('en-US', { timeZone:'Asia/Karachi', hour:'2-digit', minute:'2-digit', hour12:false }).format(new Date());
@@ -37,7 +32,7 @@ function alreadyProcessed(msgId) {
   return false;
 }
 
-// ── Neon DB persistent memory ────────────────────────────────────────────────
+// ── Neon DB Persistent Memory ─────────────────────────────────────────────────
 let _neonSql = null;
 function getNeon(dbUrl) {
   if (!dbUrl || !dbUrl.startsWith('postgres')) return null;
@@ -76,16 +71,16 @@ async function dbSave(dbUrl, phone, customerName, history) {
   } catch(e) { console.error('[DB SAVE]', e.message); }
 }
 
-// ── City name correction ──────────────────────────────────────────────────────
+// ── City Name Correction ──────────────────────────────────────────────────────
 const CITY_FIX = {
-  faizabad:'فیصل آباد', faizaabad:'فیصل آباد', faisalabaad:'فیصل آباد',
-  faisalbad:'فیصل آباد', fisalabad:'فیصل آباد', lahroe:'لاہور',
-  lhaore:'لاہور', karaachi:'کراچی', karachy:'کراچی',
-  rwalpindi:'راولپنڈی', gujranwla:'گوجرانوالہ',
+  faizabad:'Faisalabad', faizaabad:'Faisalabad', faisalabaad:'Faisalabad',
+  faisalbad:'Faisalabad', fisalabad:'Faisalabad', lahroe:'Lahore',
+  lhaore:'Lahore', karaachi:'Karachi', karachy:'Karachi',
+  rwalpindi:'Rawalpindi', gujranwla:'Gujranwala',
 };
 const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()]||w) : t;
 
-// ── Google Sheets ─────────────────────────────────────────────────────────────
+// ── Google Sheets Integration (Fixed Key Parsing) ─────────────────────────────
 let _gTok = {token:null, exp:0};
 async function getGToken(email, key) {
   if (_gTok.token && Date.now() < _gTok.exp-300000) return _gTok.token;
@@ -93,24 +88,44 @@ async function getGToken(email, key) {
     const now=Math.floor(Date.now()/1000), b64=s=>Buffer.from(s).toString('base64url');
     const h=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));
     const p=b64(JSON.stringify({iss:email,scope:'https://www.googleapis.com/auth/spreadsheets',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
-    const s=crypto.createSign('RSA-SHA256'); s.update(`${h}.${p}`);
-    const sig=s.sign(key.replace(/\\n/g,'\n'),'base64url');
-    const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${h}.${p}.${sig}`});
+    
+    // Fix for Vercel env variable escaped newlines
+    const formattedKey = key.includes('\\n') ? key.replace(/\\n/g, '\n') : key;
+
+    const s=crypto.createSign('RSA-SHA256'); 
+    s.update(`${h}.${p}`);
+    const sig=s.sign(formattedKey,'base64url');
+
+    const r=await fetch('https://oauth2.googleapis.com/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${h}.${p}.${sig}`
+    });
     const d=await r.json();
     if (d.access_token) { _gTok={token:d.access_token,exp:Date.now()+(d.expires_in||3600)*1000}; return _gTok.token; }
-  } catch(e) { console.error('[GTOKEN]',e.message); }
+    else { console.error('[GTOKEN ERROR RESPONSE]', JSON.stringify(d)); }
+  } catch(e) { console.error('[GTOKEN EXCEPTION]',e.message); }
   return null;
 }
+
 function parseOrderTag(text) {
   const m=text.match(/\[ORDER:([^\]]+)\]/i); if(!m) return null;
   const o={};
   for(const p of m[1].split('|')){const[k,...v]=p.split('=');if(k&&v.length)o[k.trim().toLowerCase()]=v.join('=').trim();}
   return Object.keys(o).length?o:null;
 }
+
 async function saveToSheet(sid, email, key, order, phone) {
-  if(!sid||!email||!key) return;
+  if(!sid||!email||!key) {
+    console.error('[SHEET] Missing configuration parameters (sid, email, or key).');
+    return;
+  }
   try {
-    const tok=await getGToken(email,key); if(!tok) return;
+    const tok=await getGToken(email,key); 
+    if(!tok) {
+      console.error('[SHEET] Failed to acquire Google OAuth token.');
+      return;
+    }
     const row=[
       new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),
       order.name||'', phone||'', order.product||'',
@@ -119,9 +134,15 @@ async function saveToSheet(sid, email, key, order, phone) {
     ];
     const res=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
       {method:'POST',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});
-    if(res.ok) console.log('[SHEET] Order saved ✓');
-    else { const e=await res.text(); console.error('[SHEET FAIL]',res.status,e.slice(0,150)); }
-  } catch(e) { console.error('[SHEET]',e.message); }
+    if(res.ok) {
+      console.log('[SHEET] Order successfully saved to Google Sheet ✓');
+    } else {
+      const e=await res.text(); 
+      console.error('[SHEET FAIL]', res.status, e.slice(0,250)); 
+    }
+  } catch(e) { 
+    console.error('[SHEET EXCEPTION]', e.message); 
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -146,23 +167,46 @@ module.exports = async (req, res) => {
   if (req.url?.includes('favicon.ico')) return res.status(204).end();
   midnightReset();
 
-  const WHATSAPP_TOKEN     = (process.env.WHATSAPP_TOKEN     ||'').trim();
-  const PHONE_NUMBER_ID    = (process.env.PHONE_NUMBER_ID    ||'').trim();
-  const VERIFY_TOKEN       = (process.env.VERIFY_TOKEN       ||'').trim();
-  const GEMINI_API_KEY     = (process.env.GEMINI_API_KEY     ||'').trim();
-  const GROQ_API_KEY       = (process.env.GROQ_API_KEY       ||'').trim();
-  const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY ||'').trim();
-  const ELEVENLABS_VOICE_ID= (process.env.ELEVENLABS_VOICE_ID||'EXAVITQu4vr4xnSDxMaL').trim();
-  const JAZZCASH_NUMBER    = (process.env.JAZZCASH_NUMBER    ||'').trim();
-  const EASYPAISA_NUMBER   = (process.env.EASYPAISA_NUMBER   ||'').trim();
-  const CEREBRAS_API_KEY   = (process.env.CEREBRAS_API_KEY   ||'').trim();
-  const OPENROUTER_API_KEY = (process.env.OPENROUTER_API_KEY ||'').trim();
-  const DATABASE_URL       = (process.env.DATABASE_URL       ||'').trim();
-  const GOOGLE_SHEETS_ID   = (process.env.GOOGLE_SHEETS_ID   ||''.trim());
-  const GOOGLE_SA_EMAIL    = (process.env.GOOGLE_SA_EMAIL    ||'').trim();
-  const GOOGLE_SA_KEY      = (process.env.GOOGLE_SA_KEY      ||'').trim();
+  const WHATSAPP_TOKEN      = (process.env.WHATSAPP_TOKEN      ||'').trim();
+  const PHONE_NUMBER_ID     = (process.env.PHONE_NUMBER_ID     ||'').trim();
+  const VERIFY_TOKEN        = (process.env.VERIFY_TOKEN        ||'').trim();
+  const GEMINI_API_KEY      = (process.env.GEMINI_API_KEY      ||'').trim();
+  const GROQ_API_KEY        = (process.env.GROQ_API_KEY        ||'').trim();
+  const ELEVENLABS_API_KEY  = (process.env.ELEVENLABS_API_KEY  ||'').trim();
+  const ELEVENLABS_VOICE_ID = (process.env.ELEVENLABS_VOICE_ID ||'21m00Tcm4TlvDq8ikWAM').trim();
+  const JAZZCASH_NUMBER     = (process.env.JAZZCASH_NUMBER     ||'').trim();
+  const EASYPAISA_NUMBER    = (process.env.EASYPAISA_NUMBER    ||'').trim();
+  const CEREBRAS_API_KEY    = (process.env.CEREBRAS_API_KEY    ||'').trim();
+  const DATABASE_URL        = (process.env.DATABASE_URL        ||'').trim();
+  const GOOGLE_SHEETS_ID    = (process.env.GOOGLE_SHEETS_ID    ||'').trim();
+  const GOOGLE_SA_EMAIL     = (process.env.GOOGLE_SA_EMAIL     ||'').trim();
+  const GOOGLE_SA_KEY       = (process.env.GOOGLE_SA_KEY       ||'').trim();
 
-  // ── GET: Webhook Verification ───────────────────────────────────────────
+  const SYSTEM_PROMPT = `آپ زارہ ہیں — فاطمہ آرٹس (Fatima Arts) کی گرم جوش سیلز ایجنٹ، پاکستان کا ایک premium unstitched fabric brand۔ آپ روبوٹ نہیں ہیں۔ کبھی AI، automation یا software کا ذکر نہ کریں۔
+
+ابھی کا وقت (PKT): ${getPKT()}
+
+=== زبان اور جواب کا طریقہ ===
+🔴 DEFAULT زبان: ہمیشہ اردو script میں جواب دیں
+1. Customer اردو script میں لکھے → اردو script میں جواب دیں ✅
+2. Customer Roman Urdu میں لکھے → Roman Urdu میں جواب دیں ✅
+3. Customer English میں لکھے → English میں جواب دیں ✅
+4. Customer voice note بھیجے → transcribed text کی زبان دیکھ کر جواب دیں ✅
+
+=== شہروں کے نام (لازمی درست لکھیں) ===
+⚠️ Faisalabad (کبھی Faizabad یا Faizaabad نہیں لکھنا)
+Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Peshawar • Quetta
+
+=== پہچان ===
+نام: زارہ — فاطمہ آرٹس ٹیم ممبر
+لہجہ: گرم، دوستانہ، پیشہ ورانہ
+قیمت: ریٹیل 3,600 روپے/سوٹ | ہول سیل (10+ سوٹ) 2,999/سوٹ
+ادائیگی: JazzCash (${JAZZCASH_NUMBER ||'confirm'}) | EasyPaisa (${EASYPAISA_NUMBER ||'confirm'}) | COD
+
+آرڈر confirm ہونے پر یہ tag لکھیں:
+[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]`;
+
+  // ─── GET: Webhook Verification ───────────────────────────────────────────
   if (req.method === 'GET') {
     const protocol = req.headers['x-forwarded-proto']||'https';
     const host     = req.headers['x-forwarded-host']||req.headers.host||'localhost';
@@ -180,7 +224,7 @@ module.exports = async (req, res) => {
     return res.status(200).send('Webhook Active');
   }
 
-  // ── POST: Message Handler ────────────────────────────────────────────────
+  // ─── POST: Message Handler ────────────────────────────────────────────────
   if (req.method === 'POST') {
     let body = req.body;
     if (typeof body==='string') { try { body=JSON.parse(body); } catch(e) {} }
@@ -210,10 +254,9 @@ module.exports = async (req, res) => {
         if (!fromNumber) { console.error('[ERROR] message.from missing'); return; }
 
         const isAudioIncoming = message.type==='audio' || message.type==='voice';
-        const contact         = contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null;
+        const contact       = contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null;
         const customerName    = (contact?.profile?.name||'').trim();
 
-        // ── Load history ───────────────────────────────────────────────
         let history = [];
         const dbData = await dbGet(DATABASE_URL, fromNumber);
         if (dbData) {
@@ -226,28 +269,25 @@ module.exports = async (req, res) => {
 
         let userMessageText = '';
 
-        // ── STEP A: Text extract or Groq Whisper transcription ────────
         if (message.type==='text') {
           userMessageText = fixCities(message.text?.body||'');
-
         } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
           console.log('[STEP A] Fetching audio from Meta...');
           const mediaId = message.audio?.id || message.voice?.id;
 
           if (!mediaId) {
-            userMessageText = 'Voice note received — please specify your query';
+            userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
           } else {
             const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
               headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
             });
             if (!mediaRes.ok) {
               console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
-              userMessageText = 'Voice note received — please specify your query';
+              userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
             } else {
               const mediaData = await mediaRes.json();
               if (!mediaData?.url) {
-                console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
-                userMessageText = 'Voice note received — please specify your query';
+                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
               } else {
                 const audioStream = await fetch(mediaData.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
                 const arrayBuffer = await audioStream.arrayBuffer();
@@ -257,7 +297,7 @@ module.exports = async (req, res) => {
                 formData.append('file',     blob, 'voice.ogg');
                 formData.append('model',    'whisper-large-v3-turbo');
                 formData.append('language', 'ur');
-                formData.append('prompt', 'Fatima Arts, Zara, فیصل آباد, لاہور, کراچی, لان, کھद्दर, مرینا, ویلویٹ, قیمت, ڈلیوری');
+                formData.append('prompt', 'فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad (NOT Faizabad)، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری');
 
                 const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
                   method:'POST', headers:{ Authorization: `Bearer ${GROQ_API_KEY}` }, body: formData
@@ -267,75 +307,31 @@ module.exports = async (req, res) => {
                   userMessageText = fixCities((groqData.text||'').trim());
                   console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0,80));
                 } else {
-                  console.error('[STEP A FAIL] Groq:', groqRes.status);
-                  userMessageText = 'Voice note received — please specify your query';
+                  userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
                 }
               }
             }
           }
+        } else if (message.type==='image')    { userMessageText='[Customer ne image bheji — poochein kya chahiye]'; }
+          else if (message.type==='sticker')  { userMessageText='[Customer ne sticker bheja — friendly acknowledgment do]'; }
+          else if (message.type==='document') { userMessageText='[Customer ne document bheja — poochein kya chahiye]'; }
+          else                                { userMessageText='[Customer ne kuch bheja — poochein kya chahiye]'; }
 
-        } else if (message.type==='image')    { userMessageText='Image received — please ask your question'; }
-          else if (message.type==='sticker')  { userMessageText='Sticker received'; }
-          else if (message.type==='document') { userMessageText='Document received'; }
-          else                                { userMessageText='Message received'; }
-
-        if (!userMessageText.trim()) userMessageText = 'Salam';
-
-        // ── System Prompt (STRICT LANGUAGE / SCRIPT MIRRORING) ────────────────
-        const SYSTEM_PROMPT = `You are Zara — the customer care and sales agent for Fatima Arts, a premium unstitched fabric brand in Pakistan. You are not a robot and should never reveal yourself as AI, a bot, or software.
-
-Current Time (PKT): ${getPKT()}
-
-=== CRITICAL LANGUAGE & SCRIPT MATCHING RULES (MUST FOLLOW) ===
-You must strictly mirror the language and writing script used by the customer in their latest message:
-1. **Roman Urdu Input:** If the customer writes in Roman Urdu (e.g., "mujhe suit chahiye", "price kya hai?"), you MUST reply ONLY in natural **Roman Urdu**. DO NOT use Urdu script (اردو) under any circumstances.
-2. **Urdu Script Input:** If the customer writes in Urdu script (e.g., "مجھے سوٹ چاہیے"), you MUST reply in clear **Urdu script**.
-3. **English Input:** If the customer writes in English, you MUST reply in friendly **English**.
-4. **Default Safe Language:** If the customer's input is a sticker, image, audio, or ambiguous, default strictly to **Roman Urdu**.
-Tone: Professional, warm, and friendly Pakistani customer care.
-
-=== CITY SPELLING CORRECTION ===
-Always use correct spellings: فیصل آباد (not Faizabad), لاہور, کراچی, اسلام آباد, راولپنڈی, ملتان, گوجرانوالہ, پشاور, کوئٹہ.
-
-=== IDENTITY & BEHAVIOR ===
-Name: Zara — Fatima Arts Team Member.
-Try to address the customer by name if known.
-Use maximum 2 to 3 emojis per message.
-
-=== PRODUCTS (All Unstitched) ===
-1. Lawn/Printed • 2. Embroidered • 3. Linen/Khaddar • 4. Cotton • 5. Karandi • 6. Marina • 7. Velvet • 8. Dhanak
-
-=== PRICING ===
-Retail: 1 Suit = Rs. 3,600 | Delivery charges apply | No minimum order limit.
-Wholesale (10 or more suits): Rs. 2,999 per suit | 10 Suits = Rs. 29,990 | Free delivery nationwide.
-
-=== PAYMENT METHODS ===
-1. JazzCash → ${JAZZCASH_NUMBER  ||'Confirm with boss'}
-2. EasyPaisa → ${EASYPAISA_NUMBER ||'Confirm with boss'}
-3. Cash on Delivery (COD)
-
-=== ORDER FORMAT ===
-When an order is fully confirmed, include this tag at the very end of your message:
-[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]
-
-=== STRICT RESTRICTIONS ===
-❌ Never call yourself AI or a bot.
-❌ Never offer unauthorized discounts.
-❌ Never mention competitor brands.`;
+        if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
 
         const geminiContents = [
           ...history,
-          { role:'user', parts:[{ text:(customerName?`Customer Name: ${customerName}\n`:'')+userMessageText }] }
+          { role:'user', parts:[{ text:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText }] }
         ];
         const oaiMessages = [
           { role:'system', content:SYSTEM_PROMPT },
           ...history.map(c=>({ role:c.role==='model'?'assistant':'user', content:c.parts?.[0]?.text||'' })),
-          { role:'user', content:(customerName?`Customer Name: ${customerName}\n`:'')+userMessageText }
+          { role:'user', content:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText }
         ];
 
         let aiReply = '';
 
-        // ── STEP B: AI CHAIN ──────────────────────────────────────────────────
+        // Tier 1+2: Gemini
         if (!aiReply && GEMINI_API_KEY) {
           for (const model of ['gemini-3.7-flash','gemini-3.6-flash']) {
             if (aiReply) break;
@@ -394,27 +390,19 @@ When an order is fully confirmed, include this tag at the very end of your messa
           }
         }
 
-        // Tier 5: OpenRouter
-        if (!aiReply && OPENROUTER_API_KEY && !isBlocked('or:mistral')) {
-          try {
-            const r=await oaiChat({url:'https://openrouter.ai/api/v1',key:OPENROUTER_API_KEY,model:'mistralai/mistral-7b-instruct:free',messages:oaiMessages});
-            if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw) aiReply=raw.replace(/[*_~`#]/g,'').trim(); }
-            else if (r.status===429) blockFor('or:mistral',5*60*1000);
-          } catch(e) {}
-        }
-
         if (!aiReply) {
-          aiReply = 'System masroof hai, thori dair baad rabta krien.';
+          aiReply = 'Thori dair mein wapas aati hoon, abhi system busy hai. Shukriya sabr ka 🙏';
         }
 
+        // Parse and save order with error log visibility
         const orderTag = parseOrderTag(aiReply);
         if (orderTag) {
           aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi,'').trim();
-          saveToSheet(GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY, orderTag, fromNumber).catch(()=>{});
+          await saveToSheet(GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY, orderTag, fromNumber);
         }
 
         aiReply = fixCities(aiReply);
-        if (!aiReply.trim()) aiReply = 'Shukriya! 🙏';
+        if (!aiReply.trim()) aiReply = 'Thori dair mein wapas aati hoon. Shukriya 🙏';
 
         history.push({ role:'user',  parts:[{ text:userMessageText }] });
         history.push({ role:'model', parts:[{ text:aiReply }] });
@@ -423,23 +411,20 @@ When an order is fully confirmed, include this tag at the very end of your messa
         chatHistories.set(fromNumber, history);
         dbSave(DATABASE_URL, fromNumber, customerName, history).catch(()=>{});
 
-        // ── STEP C: ElevenLabs TTS → WhatsApp Voice Note ────────────────────
+        // ── ElevenLabs TTS & WhatsApp Delivery ────────────────────────────────
         let voiceSentSuccess = false;
 
-        if (isAudioIncoming && ELEVENLABS_API_KEY && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+        if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
           try {
             console.log('[STEP C] ElevenLabs TTS...');
             const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
-              method: 'POST',
-              headers: {
-                'xi-api-key': ELEVENLABS_API_KEY,
-                'Content-Type': 'application/json',
-                'Accept': 'audio/mpeg'
-              },
+              method:'POST',
+              headers: { 'xi-api-key':ELEVENLABS_API_KEY, 'Content-Type':'application/json', 'Accept':'audio/mpeg' },
               body: JSON.stringify({
-                text: aiReply,
-                model_id: 'eleven_multilingual_v2',
-                voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+                text:          aiReply,
+                model_id:      'eleven_flash_v2_5',
+                language_code: 'ur',
+                voice_settings: { stability:0.75, similarity_boost:0.85, style:0.4, use_speaker_boost:true }
               })
             });
 
@@ -460,46 +445,41 @@ When an order is fully confirmed, include this tag at the very end of your messa
                 const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
                   method:'POST',
                   headers:{ Authorization:`Bearer ${WHATSAPP_TOKEN}`, 'Content-Type':'application/json' },
-                  body: JSON.stringify({
-                    messaging_product:'whatsapp', recipient_type:'individual',
-                    to:fromNumber, type:'audio', audio:{ id:uploadData.id }
-                  })
+                  body: JSON.stringify({ messaging_product:'whatsapp', recipient_type:'individual', to:fromNumber, type:'audio', audio:{ id:uploadData.id } })
                 });
                 if (sendVoiceRes.ok) {
                   voiceSentSuccess = true;
-                  console.log('[STEP C SUCCESS] ElevenLabs Voice note sent!');
+                  console.log('[STEP C SUCCESS] Voice note sent!');
                 }
               }
-            } else {
-              const errBody = await ttsRes.text();
-              console.error('[STEP C FAIL] ElevenLabs:', ttsRes.status, errBody.slice(0, 100));
             }
-          } catch(e) { console.error('[STEP C EXC]', e?.message); }
+          } catch(e) {
+            console.error('[STEP C EXC]', e.message);
+          }
         }
 
-        // Fallback to text if voice failed or text incoming
         if (!voiceSentSuccess) {
           await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
             method:'POST',
             headers:{ Authorization:`Bearer ${WHATSAPP_TOKEN}`, 'Content-Type':'application/json' },
-            body: JSON.stringify({ messaging_product:'whatsapp', to:fromNumber, type:'text', text:{ body:aiReply } })
+            body: JSON.stringify({ messaging_product:'whatsapp', recipient_type:'individual', to:fromNumber, type:'text', text:{ body:aiReply } })
           });
-          console.log('[STEP D SUCCESS] Text sent.');
+          console.log('[TEXT FALLBACK] Message sent as text.');
         }
 
-      } catch (err) {
-        console.error('[CRITICAL ERROR]', err?.message);
+      } catch(err) {
+        console.error('[BACKGROUND ERROR]', err);
       }
     })();
 
     if (waitUntilFn) {
       waitUntilFn(processPromise);
+      return res.status(200).send('EVENT_RECEIVED');
     } else {
-      await processPromise;
+      try { await processPromise; } catch(e) {}
+      return res.status(200).send('EVENT_RECEIVED');
     }
-
-    return res.status(200).send('EVENT_RECEIVED');
   }
 
-  return res.status(200).send('OK');
+  return res.status(405).send('Method Not Allowed');
 };
