@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (ElevenLabs Version)
+//  WhatsApp Webhook — Fatima Arts / Zara AI Agent (Multilingual Version)
 //  Required Env Vars:
 //  WHATSAPP_TOKEN, PHONE_NUMBER_ID, VERIFY_TOKEN
 //  GEMINI_API_KEY, GROQ_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
@@ -78,10 +78,10 @@ async function dbSave(dbUrl, phone, customerName, history) {
 
 // ── City name correction ──────────────────────────────────────────────────────
 const CITY_FIX = {
-  faizabad:'Faisalabad', faizaabad:'Faisalabad', faisalabaad:'Faisalabad',
-  faisalbad:'Faisalabad', fisalabad:'Faisalabad', lahroe:'Lahore',
-  lhaore:'Lahore', karaachi:'Karachi', karachy:'Karachi',
-  rwalpindi:'Rawalpindi', gujranwla:'Gujranwala',
+  faizabad:'فیصل آباد', faizaabad:'فیصل آباد', faisalabaad:'فیصل آباد',
+  faisalbad:'فیصل آباد', fisalabad:'فیصل آباد', lahroe:'لاہور',
+  lhaore:'لاہور', karaachi:'کراچی', karachy:'کراچی',
+  rwalpindi:'راولپنڈی', gujranwla:'گوجرانوالہ',
 };
 const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()]||w) : t;
 
@@ -158,7 +158,7 @@ module.exports = async (req, res) => {
   const CEREBRAS_API_KEY   = (process.env.CEREBRAS_API_KEY   ||'').trim();
   const OPENROUTER_API_KEY = (process.env.OPENROUTER_API_KEY ||'').trim();
   const DATABASE_URL       = (process.env.DATABASE_URL       ||'').trim();
-  const GOOGLE_SHEETS_ID   = (process.env.GOOGLE_SHEETS_ID   ||'').trim();
+  const GOOGLE_SHEETS_ID   = (process.env.GOOGLE_SHEETS_ID   ||''.trim());
   const GOOGLE_SA_EMAIL    = (process.env.GOOGLE_SA_EMAIL    ||'').trim();
   const GOOGLE_SA_KEY      = (process.env.GOOGLE_SA_KEY      ||'').trim();
 
@@ -235,19 +235,19 @@ module.exports = async (req, res) => {
           const mediaId = message.audio?.id || message.voice?.id;
 
           if (!mediaId) {
-            userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+            userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
           } else {
             const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
               headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
             });
             if (!mediaRes.ok) {
               console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
-              userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+              userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
             } else {
               const mediaData = await mediaRes.json();
               if (!mediaData?.url) {
                 console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
-                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+                userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
               } else {
                 const audioStream = await fetch(mediaData.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
                 const arrayBuffer = await audioStream.arrayBuffer();
@@ -257,7 +257,7 @@ module.exports = async (req, res) => {
                 formData.append('file',     blob, 'voice.ogg');
                 formData.append('model',    'whisper-large-v3-turbo');
                 formData.append('language', 'ur');
-                formData.append('prompt', 'Fatima Arts, Zara, Faisalabad, Lahore, Karachi, lawn, khaddar, marina, velvet, price, delivery, pakistani customer');
+                formData.append('prompt', 'Fatima Arts, Zara, فیصل آباد, لاہور, کراچی, لان, کھद्दर, مرینا, ویلویٹ, قیمت, ڈلیوری');
 
                 const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
                   method:'POST', headers:{ Authorization: `Bearer ${GROQ_API_KEY}` }, body: formData
@@ -268,71 +268,69 @@ module.exports = async (req, res) => {
                   console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0,80));
                 } else {
                   console.error('[STEP A FAIL] Groq:', groqRes.status);
-                  userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+                  userMessageText = 'وائس پیغام موصول ہوا — پوچھیں کیا چاہیے';
                 }
               }
             }
           }
 
-        } else if (message.type==='image')    { userMessageText='[Customer ne image bheji — poochein kya chahiye]'; }
-          else if (message.type==='sticker')  { userMessageText='[Customer ne sticker bheja — friendly acknowledgment do]'; }
-          else if (message.type==='document') { userMessageText='[Customer ne document bheja — poochein kya chahiye]'; }
-          else                                { userMessageText='[Customer ne kuch bheja — poochein kya chahiye]'; }
+        } else if (message.type==='image')    { userMessageText='تصویر موصول ہوئی — پوچھیں کیا چاہیے'; }
+          else if (message.type==='sticker')  { userMessageText='اسٹیکر موصول ہوا — دوستانہ جواب دیں'; }
+          else if (message.type==='document') { userMessageText='ڈاکیومنٹ موصول ہوا — پوچھیں کیا چاہیے'; }
+          else                                { userMessageText='پیغام موصول ہوا — پوچھیں کیا چاہیے'; }
 
-        if (!userMessageText.trim()) userMessageText = 'Assalam o Alaikum';
+        if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
 
-        // ── System Prompt (For ElevenLabs: Roman Urdu is mandatory for accurate pronunciation) ──
-        const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts ki warm sales agent, Pakistan ka premium unstitched fabric brand. Aap robot nahi hain. Kabhi AI, automation ya software ka zikr na karein.
+        // ── System Prompt (Multilingual with Default Urdu) ─────────────────────
+        const SYSTEM_PROMPT = `You are Zara — the customer care and sales agent for Fatima Arts, a premium unstitched fabric brand in Pakistan. You are not a robot and should never reveal yourself as AI, a bot, or software.
 
-Current time (PKT): ${getPKT()}
+Current Time (PKT): ${getPKT()}
 
-=== LANGUAGE & RESPONSE STYLE ===
-Hamesha **Roman Urdu** (English letters) mein jawab dein (jaise: "Ji api, Fatima Arts mein خوش آمدید 😊 likhne ki bajaye "Ji api, Fatima Arts mein khush amdeed 😊"). ElevenLabs voice ke liye Roman Urdu zaroori hai taake accent theek rahe.
-Lehjha: Khaalis Pakistani Urdu — dostana aur professional.
+=== LANGUAGE & RESPONSE STYLE (MULTILINGUAL) ===
+You are multilingual and adapt to the customer's preferred language/script naturally:
+- If the customer writes in **Urdu Script**, reply in clear and correct Urdu script.
+- If the customer writes in **Roman Urdu**, reply in natural Roman Urdu.
+- If the customer writes in **English**, reply in friendly English.
+- **Default Language:** If the language is ambiguous, default to **Urdu** (Urdu script or polite Roman Urdu).
+Tone: Professional, warm, and friendly Pakistani customer care.
 
-=== CITIES (Strict spelling) ===
-Faisalabad (Kabhi Faizabad nahi), Lahore, Karachi, Islamabad, Rawalpindi, Multan, Gujranwala, Peshawar, Quetta.
+=== CITY SPELLING CORRECTION ===
+Always use correct spellings: فیصل آباد (not Faizabad), لاہور, کراچی, اسلام آباد, راولپنڈی, ملتان, گوجرانوالہ, پشاور, کوئٹہ.
 
-=== IDENTITY ===
-Name: Zara — Fatima Arts team member
-Har message mein customer ka name use karein (agar maloom ho).
-Max 2-3 emojis per message.
-
-=== TIME-BASED GREETING ===
-06:00–12:00 → Subah bakhair! 🌅
-12:00–17:00 → Khariyat se hain? ☀️
-17:00–21:00 → Sham bakhair! ✨
-21:00–06:00 → Assalam o Alaikum! (Mukhtasar jawab)
+=== IDENTITY & BEHAVIOR ===
+Name: Zara — Fatima Arts Team Member.
+Try to address the customer by name if known.
+Use maximum 2 to 3 emojis per message.
 
 === PRODUCTS (All Unstitched) ===
-1. Lawn/Printed • 2. Embroidered • 3. Linen/Khaddar • 4. Cottel • 5. Karandi • 6. Marina • 7. Velvet • 8. Dhanak
+1. Lawn/Printed • 2. Embroidered • 3. Linen/Khaddar • 4. Cotton • 5. Karandi • 6. Marina • 7. Velvet • 8. Dhanak
 
 === PRICING ===
-Retail: 1 suit = 3,600 rupees | Delivery separate | No minimum
-Wholesale (10+ suits): 2,999/suit | 10 suits = 29,990 | City delivery free
+Retail: 1 Suit = Rs. 3,600 | Delivery charges apply | No minimum order limit.
+Wholesale (10 or more suits): Rs. 2,999 per suit | 10 Suits = Rs. 29,990 | Free delivery nationwide.
 
-=== PAYMENT ===
-1. JazzCash   → ${JAZZCASH_NUMBER  ||'boss se confirm karein'}
-2. EasyPaisa → ${EASYPAISA_NUMBER ||'boss se confirm karein'}
-3. COD — Delivery par payment
+=== PAYMENT METHODS ===
+1. JazzCash → ${JAZZCASH_NUMBER  ||'Confirm with boss'}
+2. EasyPaisa → ${EASYPAISA_NUMBER ||'Confirm with boss'}
+3. Cash on Delivery (COD)
 
 === ORDER FORMAT ===
-Order confirm hone par yeh tag dein (apni line par):
+When an order is fully confirmed, include this tag at the very end of your message:
 [ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]
 
-=== NEVER DO ===
-❌ AI/bot/automated kehna
-❌ Baghair boss ke discount dena
-❌ Competitors ka zikr karna`;
+=== STRICT RESTRICTIONS ===
+❌ Never call yourself AI or a bot.
+❌ Never offer unauthorized discounts.
+❌ Never mention competitor brands.`;
 
         const geminiContents = [
           ...history,
-          { role:'user', parts:[{ text:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText }] }
+          { role:'user', parts:[{ text:(customerName?`Customer Name: ${customerName}\n`:'')+userMessageText }] }
         ];
         const oaiMessages = [
           { role:'system', content:SYSTEM_PROMPT },
           ...history.map(c=>({ role:c.role==='model'?'assistant':'user', content:c.parts?.[0]?.text||'' })),
-          { role:'user', content:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText }
+          { role:'user', content:(customerName?`Customer Name: ${customerName}\n`:'')+userMessageText }
         ];
 
         let aiReply = '';
@@ -406,7 +404,7 @@ Order confirm hone par yeh tag dein (apni line par):
         }
 
         if (!aiReply) {
-          aiReply = 'Thori dair mein wapas aati hoon, system busy hai.';
+          aiReply = 'تھوڑی دیر میں واپس آتی ہوں، سسٹم مصروف ہے۔ / System is busy, please wait.';
         }
 
         const orderTag = parseOrderTag(aiReply);
@@ -416,7 +414,7 @@ Order confirm hone par yeh tag dein (apni line par):
         }
 
         aiReply = fixCities(aiReply);
-        if (!aiReply.trim()) aiReply = 'Shukriya sabr ka 🙏';
+        if (!aiReply.trim()) aiReply = 'شکریہ! 🙏';
 
         history.push({ role:'user',  parts:[{ text:userMessageText }] });
         history.push({ role:'model', parts:[{ text:aiReply }] });
