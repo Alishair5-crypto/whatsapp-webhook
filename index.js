@@ -156,7 +156,6 @@ async function saveToSheet(sid, email, key, order, phone) {
       order.payment || 'COD'
     ];
 
-    // Using Sheet1!A1:J:append for robust row insertion with exact range notation
     const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A1:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
@@ -233,7 +232,8 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
 ادائیگی: JazzCash (${JAZZCASH_NUMBER ||'confirm'}) | EasyPaisa (${EASYPAISA_NUMBER ||'confirm'}) | COD
 
 ⚠️ انتہائی اہم ہدایت (آرڈر سیو کرنے کے لیے):
-جب customer اپنا مکمل پتہ (address)، شہر (city)، نام (name)، اور سوٹ کی تفصیلات دے کر آرڈر confirm کرے، تو آپ کے جواب کے آخر میں یہ ٹیग لازمی ہونا چاہیے (اس کے بغیر آرڈر گوگل شیٹ میں سیو نہیں ہوگا):
+1. آپ خود سے کبھی یہ نہ کہیں کہ "آپ کا آرڈر save ہو گیا ہے" جب تک آپ نیچے والا [ORDER:...] tag اپنے جواب کے آخر میں لازمی نہ لگا دیں۔
+2. سسٹم اسی tag کو پڑھ کر گوگل شیٹ میں انٹری کرتا ہے۔ اگر آپ tag نہیں لگائیں گی تو آرڈر ضائع ہو جائے گا اور شیٹ میں سیو نہیں ہوگا۔
 [ORDER:name=CustomerName|product=Product Name|qty=1|price=3600|payment=COD|address=Full Address|city=CityName]`;
 
   // ─── GET: Webhook Verification ───────────────────────────────────────────
