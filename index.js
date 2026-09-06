@@ -141,8 +141,6 @@ async function saveToSheet(sid, email, key, order, phone) {
     const orderId = `FA-${Math.floor(100000 + Math.random() * 900000)}`;
     const currentDate = new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' });
 
-    // Exact matching with your Google Sheet columns (A to J):
-    // Col A: Order ID | Col B: Date | Col C: Empty | Col D: Customer Name | Col E: Contact Number | Col F: Product Name | Col G: Quantity | Col H: Size | Col I: City | Col J: Payment
     const row = [
       orderId,
       currentDate,
@@ -232,8 +230,7 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
 ادائیگی: JazzCash (${JAZZCASH_NUMBER ||'confirm'}) | EasyPaisa (${EASYPAISA_NUMBER ||'confirm'}) | COD
 
 ⚠️ انتہائی اہم ہدایت (آرڈر سیو کرنے کے لیے):
-1. آپ خود سے کبھی یہ نہ کہیں کہ "آپ کا آرڈر save ہو گیا ہے" جب تک آپ نیچے والا [ORDER:...] tag اپنے جواب کے آخر میں لازمی نہ لگا دیں۔
-2. سسٹم اسی tag کو پڑھ کر گوگل شیٹ میں انٹری کرتا ہے۔ اگر آپ tag نہیں لگائیں گی تو آرڈر ضائع ہو جائے گا اور شیٹ میں سیو نہیں ہوگا۔
+جب customer اپنا نام، فون، مکمل پتہ (address)، اور شہر (city) بتا کر آرڈر confirm کرے، تو آپ کے جواب کے آخر میں یہ ٹیگ لازمی ہونا چاہیے (اس کے بغیر آرڈر گوگل شیٹ میں سیو نہیں ہوگا):
 [ORDER:name=CustomerName|product=Product Name|qty=1|price=3600|payment=COD|address=Full Address|city=CityName]`;
 
   // ─── GET: Webhook Verification ───────────────────────────────────────────
@@ -359,9 +356,9 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
 
         let aiReply = '';
 
-        // Tier 1+2: Gemini
+        // Tier 1+2: Gemini (Stable Models)
         if (!aiReply && GEMINI_API_KEY) {
-          for (const model of ['gemini-3.7-flash','gemini-3.6-flash']) {
+          for (const model of ['gemini-2.0-flash', 'gemini-1.5-flash']) {
             if (aiReply) break;
             const cbKey = `g:${model}`;
             if (isBlocked(cbKey)) continue;
@@ -383,7 +380,11 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
                   if (raw) aiReply=raw.replace(/[*_~`#]/g,'').trim();
                   break;
                 }
+                const errTxt = await r.text();
+                console.error(`[GEMINI ERROR] ${model}:`, errTxt);
+
                 if (r.status===429) { blockFor(cbKey,5*60*1000); break; }
+                if (r.status===400 || r.status===404) break;
                 if (r.status===503 && att<2) { await sleep(2000); continue; }
                 break;
               } catch(e) {
@@ -404,9 +405,9 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
           } catch(e) {}
         }
 
-        // Tier 4: Groq
+        // Tier 4: Groq (Using verified stable models)
         if (!aiReply && GROQ_API_KEY) {
-          for (const gm of ['openai/gpt-oss-120b','qwen/qwen3.6-27b']) {
+          for (const gm of ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']) {
             if (aiReply) break;
             const cbKey=`gr:${gm}`; if(isBlocked(cbKey)) continue;
             try {
@@ -451,12 +452,14 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
               body: JSON.stringify({
                 text:          aiReply,
                 model_id:      'eleven_flash_v2_5',
-                language_code: 'ur',
                 voice_settings: { stability:0.75, similarity_boost:0.85, style:0.4, use_speaker_boost:true }
               })
             });
 
-            if (ttsRes.ok) {
+            if (!ttsRes.ok) {
+              const errText = await ttsRes.text();
+              console.error('[ELEVENLABS FAIL]', ttsRes.status, errText);
+            } else {
               const arrayBuffer   = await ttsRes.arrayBuffer();
               const mediaFormData = new globalThis.FormData();
               const audioBlob     = new globalThis.Blob([arrayBuffer], { type:'audio/mpeg' });
@@ -478,7 +481,12 @@ Lahore • Karachi • Islamabad • Rawalpindi • Multan • Gujranwala • Pe
                 if (sendVoiceRes.ok) {
                   voiceSentSuccess = true;
                   console.log('[STEP C SUCCESS] Voice note sent!');
+                } else {
+                  const sendErr = await sendVoiceRes.text();
+                  console.error('[WHATSAPP VOICE SEND FAIL]', sendVoiceRes.status, sendErr);
                 }
+              } else {
+                console.error('[WHATSAPP MEDIA UPLOAD FAIL]', JSON.stringify(uploadData));
               }
             }
           } catch(e) {
