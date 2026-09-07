@@ -8,531 +8,127 @@
 //  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
-
-// ── Vercel waitUntil ──────────────────────────────────────────────────────────
 const { waitUntil } = require('@vercel/functions');
 
-// ── Circuit breaker ───────────────────────────────────────────────────────────
 if (!global._cb) global._cb = new Map();
-const isBlocked = k      => Date.now() < (global._cb.get(k) || 0);
-const blockFor  = (k, ms) => { global._cb.set(k, Date.now() + ms); console.warn(`[CB] ${k} blocked ${Math.round(ms/1000)}s`); };
+const isBlocked = k => Date.now() < (global._cb.get(k) || 0);
+const blockFor = (k, ms) => { global._cb.set(k, Date.now() + ms); console.warn(`[CB] ${k} blocked ${Math.round(ms/1000)}s`); };
 
-// ── Midnight PKT reset ────────────────────────────────────────────────────────
 function midnightReset() {
   try {
-    const pkt = new Intl.DateTimeFormat('en-US', { timeZone:'Asia/Karachi', hour:'2-digit', minute:'2-digit', hour12:false }).format(new Date());
-    const [h,m] = pkt.split(':').map(Number);
-    if (h===0 && m<=5 && global._cb.size>0) { global._cb.clear(); console.log('[CB] Midnight PKT reset — quota refilled'); }
-  } catch (e) { console.warn('[CB] Midnight reset failed:', e?.message || e); }
+    const pkt = new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Karachi',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date());
+    const [h,m]=pkt.split(':').map(Number);
+    if(h===0&&m<=5&&global._cb.size>0){global._cb.clear();console.log('[CB] Midnight PKT reset — quota refilled');}
+  } catch(e){console.warn('[CB] Midnight reset failed:',e?.message||e);}
 }
 
-// ── Instance-local fallback deduplication ─────────────────────────────────────
-if (!global._dedup) global._dedup = new Map();
-function alreadyProcessed(msgId) {
-  if (!msgId) return false;
-  const now = Date.now();
-  if (global._dedup.size > 500) for (const [k,v] of global._dedup) if (v <= now) global._dedup.delete(k);
-  if ((global._dedup.get(msgId)||0) > now) return true;
-  global._dedup.set(msgId, now + 10*60*1000);
-  return false;
+if(!global._dedup) global._dedup=new Map();
+function alreadyProcessed(msgId){
+  if(!msgId)return false; const now=Date.now();
+  if(global._dedup.size>500)for(const[k,v]of global._dedup)if(v<=now)global._dedup.delete(k);
+  if((global._dedup.get(msgId)||0)>now)return true;
+  global._dedup.set(msgId,now+10*60*1000); return false;
 }
 
-// ── Neon DB persistent memory ────────────────────────────────────────────────
-let _neonSql = null;
-function getNeon(dbUrl) {
-  if (!dbUrl || !dbUrl.startsWith('postgres')) return null;
-  if (!_neonSql) {
-    try { const {neon} = require('@neondatabase/serverless'); _neonSql = neon(dbUrl); }
-    catch(e) { console.error('[DB] neon init failed:', e.message); return null; }
-  }
+let _neonSql=null;
+function getNeon(dbUrl){
+  if(!dbUrl||!dbUrl.startsWith('postgres'))return null;
+  if(!_neonSql){try{const{neon}=require('@neondatabase/serverless');_neonSql=neon(dbUrl);}catch(e){console.error('[DB] neon init failed:',e.message);return null;}}
   return _neonSql;
 }
-const _dbCache = new Map();
-async function dbGet(dbUrl, phone) {
-  if (_dbCache.has(phone)) return _dbCache.get(phone);
-  const sql = getNeon(dbUrl); if (!sql) return null;
-  try {
-    const rows = await sql`SELECT history, customer_name FROM zara_conversations WHERE phone_number=${phone} LIMIT 1`;
-    if (rows?.length) {
-      const d = { history: rows[0].history||[], customerName: rows[0].customer_name||'' };
-      _dbCache.set(phone, d); return d;
-    }
-  } catch(e) { console.error('[DB GET]', e.message); }
-  return null;
+const _dbCache=new Map();
+async function dbGet(dbUrl,phone){
+  if(_dbCache.has(phone))return _dbCache.get(phone); const sql=getNeon(dbUrl); if(!sql)return null;
+  try{const rows=await sql`SELECT history, customer_name FROM zara_conversations WHERE phone_number=${phone} LIMIT 1`;if(rows?.length){const d={history:rows[0].history||[],customerName:rows[0].customer_name||''};_dbCache.set(phone,d);return d;}}catch(e){console.error('[DB GET]',e.message);} return null;
 }
-async function dbSave(dbUrl, phone, customerName, history) {
-  _dbCache.set(phone, {history, customerName});
-  const sql = getNeon(dbUrl); if (!sql) return;
-  try {
-    await sql`
-      INSERT INTO zara_conversations (phone_number, customer_name, history, last_seen, msg_count)
-      VALUES (${phone}, ${customerName||''}, ${JSON.stringify(history.slice(-20))}::jsonb, NOW(), ${history.length})
-      ON CONFLICT (phone_number) DO UPDATE SET
-        customer_name = EXCLUDED.customer_name,
-        history       = EXCLUDED.history,
-        last_seen     = NOW(),
-        msg_count     = EXCLUDED.msg_count
-    `;
-  } catch(e) { console.error('[DB SAVE]', e.message); }
+async function dbSave(dbUrl,phone,customerName,history){
+  _dbCache.set(phone,{history,customerName}); const sql=getNeon(dbUrl); if(!sql)return;
+  try{await sql`INSERT INTO zara_conversations (phone_number,customer_name,history,last_seen,msg_count) VALUES (${phone},${customerName||''},${JSON.stringify(history.slice(-20))}::jsonb,NOW(),${history.length}) ON CONFLICT (phone_number) DO UPDATE SET customer_name=EXCLUDED.customer_name,history=EXCLUDED.history,last_seen=NOW(),msg_count=EXCLUDED.msg_count`;}catch(e){console.error('[DB SAVE]',e.message);}
 }
-
-let _dbSchemaPromise = null;
-async function ensureDbSchema(dbUrl) {
-  const sql=getNeon(dbUrl); if(!sql) return false;
-  if(!_dbSchemaPromise) {
-    _dbSchemaPromise=(async()=>{
-      await sql`CREATE TABLE IF NOT EXISTS zara_processed_messages (message_id TEXT PRIMARY KEY, phone_number TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'processing', locked_until TIMESTAMPTZ DEFAULT NOW(), processed_at TIMESTAMPTZ)`;
-      await sql`ALTER TABLE zara_processed_messages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'processing'`;
-      await sql`ALTER TABLE zara_processed_messages ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ DEFAULT NOW()`;
-      await sql`ALTER TABLE zara_processed_messages ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`;
-      await sql`CREATE INDEX IF NOT EXISTS zara_processed_messages_locked_idx ON zara_processed_messages (locked_until)`;
-      await sql`CREATE TABLE IF NOT EXISTS zara_orders (order_id TEXT PRIMARY KEY, phone_number TEXT NOT NULL, message_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', error TEXT DEFAULT '', created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`;
-      return true;
-    })().catch(e=>{ console.error('[DB SCHEMA]',e?.message||e); _dbSchemaPromise=null; return false; });
-  }
+let _dbSchemaPromise=null;
+async function ensureDbSchema(dbUrl){
+  const sql=getNeon(dbUrl);if(!sql)return false;
+  if(!_dbSchemaPromise){_dbSchemaPromise=(async()=>{
+    await sql`CREATE TABLE IF NOT EXISTS zara_processed_messages (message_id TEXT PRIMARY KEY, phone_number TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'processing', locked_until TIMESTAMPTZ DEFAULT NOW(), processed_at TIMESTAMPTZ)`;
+    await sql`ALTER TABLE zara_processed_messages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'processing'`;
+    await sql`ALTER TABLE zara_processed_messages ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ DEFAULT NOW()`;
+    await sql`ALTER TABLE zara_processed_messages ADD COLUMN IF NOT EXISTS processed_at TIMESTAMPTZ`;
+    await sql`CREATE INDEX IF NOT EXISTS zara_processed_messages_locked_idx ON zara_processed_messages (locked_until)`;
+    await sql`CREATE TABLE IF NOT EXISTS zara_orders (order_id TEXT PRIMARY KEY,phone_number TEXT NOT NULL,message_id TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',error TEXT DEFAULT '',created_at TIMESTAMPTZ DEFAULT NOW(),updated_at TIMESTAMPTZ DEFAULT NOW())`;
+    return true;
+  })().catch(e=>{console.error('[DB SCHEMA]',e?.message||e);_dbSchemaPromise=null;return false;});}
   return _dbSchemaPromise;
 }
-async function claimProcessedMessage(dbUrl, messageId, phone) {
-  if(!messageId) return true;
-  if(!(await ensureDbSchema(dbUrl))) return null;
-  const sql=getNeon(dbUrl);
-  try {
-    const rows=await sql`INSERT INTO zara_processed_messages (message_id, phone_number, status, locked_until) VALUES (${messageId}, ${phone||''}, 'processing', NOW()+INTERVAL '10 minutes') ON CONFLICT (message_id) DO UPDATE SET status='processing', locked_until=NOW()+INTERVAL '10 minutes', phone_number=EXCLUDED.phone_number WHERE zara_processed_messages.status='failed' OR (zara_processed_messages.status='processing' AND zara_processed_messages.locked_until < NOW()) RETURNING message_id`;
-    return rows.length>0;
-  } catch(e) { console.error('[DB DEDUP]',e?.message||e); return null; }
+async function claimProcessedMessage(dbUrl,messageId,phone){
+  if(!messageId)return true;if(!(await ensureDbSchema(dbUrl)))return null;const sql=getNeon(dbUrl);
+  try{const rows=await sql`INSERT INTO zara_processed_messages (message_id,phone_number,status,locked_until) VALUES (${messageId},${phone||''},'processing',NOW()+INTERVAL '10 minutes') ON CONFLICT (message_id) DO UPDATE SET status='processing',locked_until=NOW()+INTERVAL '10 minutes',phone_number=EXCLUDED.phone_number WHERE zara_processed_messages.status='failed' OR (zara_processed_messages.status='processing' AND zara_processed_messages.locked_until<NOW()) RETURNING message_id`;return rows.length>0;}catch(e){console.error('[DB DEDUP]',e?.message||e);return null;}
 }
-async function markProcessedMessage(dbUrl, messageId, status='processed') {
-  const sql=getNeon(dbUrl); if(!sql || !messageId) return;
-  try { await sql`UPDATE zara_processed_messages SET status=${status}, processed_at=CASE WHEN ${status}='processed' THEN NOW() ELSE NULL END, locked_until=NOW() WHERE message_id=${messageId}`; }
-  catch(e) { console.error('[DB DEDUP UPDATE]',e?.message||e); }
+async function markProcessedMessage(dbUrl,messageId,status='processed'){const sql=getNeon(dbUrl);if(!sql||!messageId)return;try{await sql`UPDATE zara_processed_messages SET status=${status},processed_at=CASE WHEN ${status}='processed' THEN NOW() ELSE NULL END,locked_until=NOW() WHERE message_id=${messageId}`;}catch(e){console.error('[DB DEDUP UPDATE]',e?.message||e);}}
+async function claimOrder(dbUrl,orderId,phone,messageId){if(!dbUrl)return'unavailable';if(!(await ensureDbSchema(dbUrl)))return'error';const sql=getNeon(dbUrl);try{const rows=await sql`INSERT INTO zara_orders (order_id,phone_number,message_id,status) VALUES (${orderId},${phone||''},${messageId||''},'pending') ON CONFLICT (order_id) DO UPDATE SET updated_at=NOW() RETURNING status`;return rows[0]?.status||'pending';}catch(e){console.error('[DB ORDER CLAIM]',e?.message||e);return'error';}}
+async function markOrder(dbUrl,orderId,status,error=''){const sql=getNeon(dbUrl);if(!sql)return;try{await sql`UPDATE zara_orders SET status=${status},error=${String(error||'').slice(0,500)},updated_at=NOW() WHERE order_id=${orderId}`;}catch(e){console.error('[DB ORDER UPDATE]',e?.message||e);}}
+
+const CITY_FIX={faizabad:'Faisalabad',faizaabad:'Faisalabad',faisalabaad:'Faisalabad',faisalbad:'Faisalabad',fisalabad:'Faisalabad',lahroe:'Lahore',lhaore:'Lahore',karaachi:'Karachi',karachy:'Karachi',rwalpindi:'Rawalpindi',gujranwla:'Gujranwala'};
+const fixCities=t=>t?t.replace(/\b([A-Za-z]+)\b/g,w=>CITY_FIX[w.toLowerCase()]||w):t;
+
+let _gTok={token:null,exp:0};
+async function getGToken(email,key){
+  if(_gTok.token&&Date.now()<_gTok.exp-300000)return _gTok.token;
+  try{const now=Math.floor(Date.now()/1000),b64=s=>Buffer.from(s).toString('base64url');const h=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));const p=b64(JSON.stringify({iss:email,scope:'https://www.googleapis.com/auth/spreadsheets',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));const signer=crypto.createSign('RSA-SHA256');signer.update(`${h}.${p}`);const sig=signer.sign(key.replace(/\\n/g,'\n'),'base64url');const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${h}.${p}.${sig}`});const d=await r.json();if(d.access_token){_gTok={token:d.access_token,exp:Date.now()+(d.expires_in||3600)*1000};return _gTok.token;}console.error('[GTOKEN] Token request failed:',d.error||d.error_description||'unknown error');}catch(e){console.error('[GTOKEN]',e.message);}return null;
 }
-async function claimOrder(dbUrl, orderId, phone, messageId) {
-  if(!dbUrl) return 'unavailable';
-  if(!(await ensureDbSchema(dbUrl))) return 'error';
-  const sql=getNeon(dbUrl);
-  try {
-    const rows=await sql`INSERT INTO zara_orders (order_id, phone_number, message_id, status) VALUES (${orderId}, ${phone||''}, ${messageId||''}, 'pending') ON CONFLICT (order_id) DO UPDATE SET updated_at=NOW() RETURNING status`;
-    return rows[0]?.status||'pending';
-  } catch(e) { console.error('[DB ORDER CLAIM]',e?.message||e); return 'error'; }
-}
-async function markOrder(dbUrl, orderId, status, error='') {
-  const sql=getNeon(dbUrl); if(!sql) return;
-  try { await sql`UPDATE zara_orders SET status=${status}, error=${String(error||'').slice(0,500)}, updated_at=NOW() WHERE order_id=${orderId}`; }
-  catch(e) { console.error('[DB ORDER UPDATE]',e?.message||e); }
+function parseOrderTag(text){const m=String(text||'').match(/\[ORDER:([^\]]+)\]/i);if(!m)return null;const o={};for(const p of m[1].split('|')){const[k,...v]=p.split('=');if(k&&v.length)o[k.trim().toLowerCase()]=v.join('=').trim();}return Object.keys(o).length?o:null;}
+function explicitOrderConfirmation(text){const s=String(text||'').toLowerCase().replace(/[.!?,،؛:]/g,' ');return/(^|\s)(yes|yup|yeah|confirm|confirmed|ok|okay|haan|han|bilkul|theek|thik|done|proceed)(\s|$)/i.test(s)||/order\s+(confirm|kar|kardo|kardain|kar dein|bhej|bhej dein)/i.test(s)||/(kar\s+dein|kar\s+do|bhej\s+dein|bhej\s+do)/i.test(s)||/(^|\s)(ہاں|تصدیق|ٹھیک|ٹھیک ہے|کر دیں|آرڈر کر دیں)(\s|$)/u.test(s);}
+function validateOrder(order){if(!order||typeof order!=='object')return'invalid_order';for(const k of['name','product','qty','price','payment','address','city'])if(!String(order[k]??'').trim())return`missing_${k}`;const qty=Number(order.qty);if(!Number.isInteger(qty)||qty<1||qty>1000)return'invalid_qty';const price=Number(String(order.price).replace(/,/g,''));if(!Number.isFinite(price)||price<=0||price>10000000)return'invalid_price';if(!['cod','jazzcash','easypaisa'].includes(String(order.payment).trim().toLowerCase()))return'invalid_payment';if(String(order.address).trim().length<8)return'invalid_address';if(String(order.city).trim().length<2)return'invalid_city';return null;}
+async function saveToSheet(sid,email,key,order,phone,messageId,confirmed,dbUrl){
+  if(!sid||!email||!key){console.error('[SHEET] Missing Google Sheets configuration');return false;}if(!confirmed){console.warn('[ORDER GUARD] Customer confirmation missing');return false;}const validationError=validateOrder(order);if(validationError){console.error('[ORDER GUARD]',validationError);return false;}
+  try{const tok=await getGToken(email,key);if(!tok){console.error('[SHEET] Google access token unavailable');return false;}const orderId=crypto.createHash('sha256').update(`${phone}:${messageId||''}`).digest('hex').slice(0,24);const claim=await claimOrder(dbUrl,orderId,phone,messageId);if(claim==='saved'){console.log('[SHEET] Order already saved:',orderId);return true;}if(claim==='error'){console.error('[SHEET] Persistent order lock unavailable');return false;}
+    const row=[new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),order.name,phone||'',order.product,order.qty,order.price,String(order.payment).trim().toUpperCase(),order.address,order.city,'Pending',orderId];
+    const checkRes=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!K:K`,{headers:{Authorization:`Bearer ${tok}`}});if(!checkRes.ok){console.error('[SHEET] Duplicate check failed:',checkRes.status);await markOrder(dbUrl,orderId,'failed',`duplicate check ${checkRes.status}`);return false;}const existing=(await checkRes.json())?.values||[];if(existing.some(r=>String(r?.[0]||'')===orderId)){console.log('[SHEET] Duplicate order skipped:',orderId);await markOrder(dbUrl,orderId,'saved');return true;}
+    const res=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:K:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,{method:'POST',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});if(res.ok){console.log('[SHEET] Order saved ✓',orderId);await markOrder(dbUrl,orderId,'saved');return true;}const e=await res.text();console.error('[SHEET FAIL]',res.status,e.slice(0,150));await markOrder(dbUrl,orderId,'failed',e);return false;
+  }catch(e){console.error('[SHEET]',e?.message||e);return false;}
 }
 
-// ── City name correction ──────────────────────────────────────────────────────
-const CITY_FIX = {
-  faizabad:'Faisalabad', faizaabad:'Faisalabad', faisalabaad:'Faisalabad',
-  faisalbad:'Faisalabad', fisalabad:'Faisalabad', lahroe:'Lahore',
-  lhaore:'Lahore', karaachi:'Karachi', karachy:'Karachi',
-  rwalpindi:'Rawalpindi', gujranwla:'Gujranwala',
-};
-const fixCities = t => t ? t.replace(/\b([A-Za-z]+)\b/g, w => CITY_FIX[w.toLowerCase()]||w) : t;
+const ROMAN_URDU_WORDS=new Set(['hai','hain','ho','houn','hun','tha','thi','the','aap','ap','apki','aapki','kia','kya','kyun','kyon','kaise','kaisa','karna','karo','karein','krna','krdo','chahiye','chahye','mujhe','mujhy','ham','hum','mera','meri','mere','apna','apni','yeh','ye','woh','wo','kahan','kab','abhi','phir','acha','achha','bohat','bahut','bhi','se','ko','mein','main','pe','par','ke','ki','ka','aur','ya','lekin','magar','sirf','sab','kuch','koi','nahi','nahin','ji','jana','do','dein','dena','lena','len','bhej','bhejo','bata','batayein','batana','mil','milega','rate','qeemat','keemat','suit','kapra','kapray','delivery','shehar','ghar','order','chahi','raha','rahi','rahe','sakti','sakta','pasand','theek','thik','shukriya','meharbani']);
+function detectCustomerLanguage(text){const s=String(text||'').trim();if(!s)return'roman_urdu';const urduChars=(s.match(/[\u0600-\u06FF]/g)||[]).length,latinChars=(s.match(/[A-Za-z]/g)||[]).length;if(urduChars>=2&&urduChars>=latinChars*0.35)return'urdu';const words=(s.toLowerCase().match(/[a-z]+/g)||[]);if(!words.length)return'roman_urdu';const romanHits=words.filter(w=>ROMAN_URDU_WORDS.has(w)).length;const englishHints=['the','this','that','what','which','where','when','how','can','could','would','please','want','need','price','cost','available','availability','delivery','order','payment','return','exchange','hello','hi','thanks','thank','your','you','we','i','me','my','is','are','do','does','did','will','send','show'];const englishHits=words.filter(w=>englishHints.includes(w)).length;if(romanHits>=1&&romanHits>=englishHits)return'roman_urdu';if(englishHits>=1&&englishHits>romanHits)return'english';return'roman_urdu';}
+function getLanguageInstruction(currentText,history){let lang=detectCustomerLanguage(currentText);const plain=String(currentText||'').trim().toLowerCase(),isShort=plain.length<=12&&plain.split(/\s+/).length<=3;if(isShort&&Array.isArray(history))for(let i=history.length-1;i>=0;i--){if(history[i]?.role!=='user')continue;const previous=history[i]?.parts?.[0]?.text||'';if(previous.trim()&&previous.trim().toLowerCase()!==plain){lang=detectCustomerLanguage(previous);break;}}const rules={urdu:'Reply ONLY in Urdu script (اردو). Do not use Roman Urdu or English sentences. Match the customer\'s Urdu-script language.',english:'Reply ONLY in English. Do not use Urdu script or Roman Urdu unless the customer switches language.',roman_urdu:'Reply ONLY in Roman Urdu using English/Latin letters. Do not use Urdu script unless the customer switches language.'};return{lang,instruction:rules[lang]};}
 
-// ── Google Sheets ─────────────────────────────────────────────────────────────
-let _gTok = {token:null, exp:0};
-async function getGToken(email, key) {
-  if (_gTok.token && Date.now() < _gTok.exp-300000) return _gTok.token;
-  try {
-    const now=Math.floor(Date.now()/1000), b64=s=>Buffer.from(s).toString('base64url');
-    const h=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));
-    const p=b64(JSON.stringify({iss:email,scope:'https://www.googleapis.com/auth/spreadsheets',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
-    const s=crypto.createSign('RSA-SHA256'); s.update(`${h}.${p}`);
-    const sig=s.sign(key.replace(/\\n/g,'\n'),'base64url');
-    const r=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${h}.${p}.${sig}`});
-    const d=await r.json();
-    if (d.access_token) { _gTok={token:d.access_token,exp:Date.now()+(d.expires_in||3600)*1000}; return _gTok.token; }
-    console.error('[GTOKEN] Token request failed:', d.error || d.error_description || 'unknown error');
-  } catch(e) { console.error('[GTOKEN]',e.message); }
-  return null;
-}
-function parseOrderTag(text) {
-  const m=String(text||'').match(/\[ORDER:([^\]]+)\]/i); if(!m) return null;
-  const o={};
-  for(const p of m[1].split('|')){const[k,...v]=p.split('=');if(k&&v.length)o[k.trim().toLowerCase()]=v.join('=').trim();}
-  return Object.keys(o).length?o:null;
-}
-function explicitOrderConfirmation(text) {
-  const s=String(text||'').toLowerCase().replace(/[.!?,،؛:]/g,' ');
-  return /(^|\s)(yes|yup|yeah|confirm|confirmed|ok|okay|haan|han|bilkul|theek|thik|done|proceed)(\s|$)/i.test(s) ||
-    /order\s+(confirm|kar|kardo|kardain|kar dein|bhej|bhej dein)/i.test(s) ||
-    /(kar\s+dein|kar\s+do|bhej\s+dein|bhej\s+do)/i.test(s) ||
-    /(^|\s)(ہاں|تصدیق|ٹھیک|ٹھیک ہے|کر دیں|آرڈر کر دیں)(\s|$)/u.test(s);
-}
-function validateOrder(order) {
-  if (!order || typeof order !== 'object') return 'invalid_order';
-  const required=['name','product','qty','price','payment','address','city'];
-  for (const k of required) if (!String(order[k] ?? '').trim()) return `missing_${k}`;
-  const qty=Number(order.qty);
-  if (!Number.isInteger(qty) || qty<1 || qty>1000) return 'invalid_qty';
-  const price=Number(String(order.price).replace(/,/g,''));
-  if (!Number.isFinite(price) || price<=0 || price>10000000) return 'invalid_price';
-  if (!['cod','jazzcash','easypaisa'].includes(String(order.payment).trim().toLowerCase())) return 'invalid_payment';
-  if (String(order.address).trim().length<8) return 'invalid_address';
-  if (String(order.city).trim().length<2) return 'invalid_city';
-  return null;
-}
-async function saveToSheet(sid, email, key, order, phone, messageId, confirmed, dbUrl) {
-  if (!sid||!email||!key) { console.error('[SHEET] Missing Google Sheets configuration'); return false; }
-  if (!confirmed) { console.warn('[ORDER GUARD] Customer confirmation missing'); return false; }
-  const validationError=validateOrder(order);
-  if (validationError) { console.error('[ORDER GUARD]', validationError); return false; }
-  try {
-    const tok=await getGToken(email,key);
-    if(!tok) { console.error('[SHEET] Google access token unavailable'); return false; }
-    const orderId=crypto.createHash('sha256').update(`${phone}:${messageId||''}`).digest('hex').slice(0,24);
-    const claim=await claimOrder(dbUrl,orderId,phone,messageId);
-    if(claim==='saved') { console.log('[SHEET] Order already saved:',orderId); return true; }
-    if(claim==='error') { console.error('[SHEET] Persistent order lock unavailable'); return false; }
-    const row=[
-      new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),
-      order.name, phone||'', order.product,
-      order.qty, order.price, String(order.payment).trim().toUpperCase(),
-      order.address, order.city, 'Pending', orderId
-    ];
-    const checkRes=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!K:K`,{headers:{Authorization:`Bearer ${tok}`}});
-    if(!checkRes.ok) { console.error('[SHEET] Duplicate check failed:',checkRes.status); await markOrder(dbUrl,orderId,'failed',`duplicate check ${checkRes.status}`); return false; }
-    const existing=(await checkRes.json())?.values||[];
-    if(existing.some(r=>String(r?.[0]||'')===orderId)) { console.log('[SHEET] Duplicate order skipped:',orderId); await markOrder(dbUrl,orderId,'saved'); return true; }
-    const res=await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:K:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
-      {method:'POST',headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},body:JSON.stringify({values:[row]})});
-    if(res.ok) { console.log('[SHEET] Order saved ✓',orderId); await markOrder(dbUrl,orderId,'saved'); return true; }
-    const e=await res.text(); console.error('[SHEET FAIL]',res.status,e.slice(0,150)); await markOrder(dbUrl,orderId,'failed',e); return false;
-  } catch(e) { console.error('[SHEET]',e?.message||e); return false; }
-}
+function getPKT(){try{const p={};for(const x of new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Karachi',weekday:'long',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date()))p[x.type]=x.value;return`${p.weekday} ${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} PKT`;}catch(e){console.warn('[TIME] PKT unavailable:',e?.message||e);return'PKT unavailable';}}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function oaiChat({url,key,model,messages,maxTokens=800,timeout=20000}){const ctrl=new AbortController(),t=setTimeout(()=>ctrl.abort(),timeout);try{return await fetch(`${url}/chat/completions`,{method:'POST',signal:ctrl.signal,headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature:0.7,max_tokens:maxTokens})});}finally{clearTimeout(t);}}
+const chatHistories=new Map();
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function getPKT() {
-  try {
-    const p={};
-    for(const x of new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Karachi',weekday:'long',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date())) p[x.type]=x.value;
-    return `${p.weekday} ${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute} PKT`;
-  } catch(e) { console.warn('[TIME] PKT unavailable:',e?.message||e); return 'PKT unavailable'; }
-}
-const sleep = ms => new Promise(r=>setTimeout(r,ms));
-async function oaiChat({url,key,model,messages,maxTokens=800,timeout=20000}) {
-  const ctrl=new AbortController(), t=setTimeout(()=>ctrl.abort(),timeout);
-  try { return await fetch(`${url}/chat/completions`,{method:'POST',signal:ctrl.signal,headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model,messages,temperature:0.7,max_tokens:maxTokens})}); }
-  finally { clearTimeout(t); }
-}
+function timingSafeEqualHex(a,b){try{const x=Buffer.from(String(a||''),'hex'),y=Buffer.from(String(b||''),'hex');return x.length===y.length&&crypto.timingSafeEqual(x,y);}catch(e){return false;}}
+async function getRawBody(req){if(Buffer.isBuffer(req.rawBody))return req.rawBody;if(typeof req.rawBody==='string')return Buffer.from(req.rawBody);if(Buffer.isBuffer(req.body))return req.body;if(typeof req.body==='string')return Buffer.from(req.body);if(req.readable){const chunks=[];for await(const chunk of req)chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk));return Buffer.concat(chunks);}return Buffer.alloc(0);}
+function verifyMetaSignature(rawBody,signature,appSecret){if(!appSecret||!signature)return false;const[scheme,hex]=String(signature).split('=',2);if(scheme!=='sha256'||!/^[a-f0-9]{64}$/i.test(hex||''))return false;const digest=crypto.createHmac('sha256',appSecret).update(rawBody).digest('hex');return timingSafeEqualHex(digest,hex);}
+module.exports.config={api:{bodyParser:false}};
 
-const chatHistories = new Map();
-
-// ── Meta webhook signature verification ─────────────────────────────────────
-function timingSafeEqualHex(a,b) {
-  try {
-    const x=Buffer.from(String(a||''),'hex'), y=Buffer.from(String(b||''),'hex');
-    return x.length===y.length && crypto.timingSafeEqual(x,y);
-  } catch (_) { return false; }
-}
-async function getRawBody(req) {
-  if (Buffer.isBuffer(req.rawBody)) return req.rawBody;
-  if (typeof req.rawBody==='string') return Buffer.from(req.rawBody);
-  if (Buffer.isBuffer(req.body)) return req.body;
-  if (typeof req.body==='string') return Buffer.from(req.body);
-  if (req.readable) {
-    const chunks=[];
-    for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk));
-    return Buffer.concat(chunks);
+module.exports=async(req,res)=>{
+  if(req.url?.includes('favicon.ico'))return res.status(204).end();midnightReset();
+  const WHATSAPP_TOKEN=(process.env.WHATSAPP_TOKEN||'').trim(),PHONE_NUMBER_ID=(process.env.PHONE_NUMBER_ID||'').trim(),VERIFY_TOKEN=(process.env.VERIFY_TOKEN||'').trim(),GEMINI_API_KEY=(process.env.GEMINI_API_KEY||'').trim(),GROQ_API_KEY=(process.env.GROQ_API_KEY||'').trim(),ELEVENLABS_API_KEY=(process.env.ELEVENLABS_API_KEY||'').trim(),ELEVENLABS_VOICE_ID=(process.env.ELEVENLABS_VOICE_ID||'EXAVITQu4vr4xnSDxMaL').trim(),JAZZCASH_NUMBER=(process.env.JAZZCASH_NUMBER||'').trim(),EASYPAISA_NUMBER=(process.env.EASYPAISA_NUMBER||'').trim(),CEREBRAS_API_KEY=(process.env.CEREBRAS_API_KEY||'').trim(),OPENROUTER_API_KEY=(process.env.OPENROUTER_API_KEY||'').trim(),DATABASE_URL=(process.env.DATABASE_URL||'').trim(),GOOGLE_SHEETS_ID=(process.env.GOOGLE_SHEETS_ID||'').trim(),GOOGLE_SA_EMAIL=(process.env.GOOGLE_SA_EMAIL||'').trim(),GOOGLE_SA_KEY=(process.env.GOOGLE_SA_KEY||'').trim(),WHATSAPP_APP_SECRET=(process.env.WHATSAPP_APP_SECRET||'').trim();
+  if(req.method==='GET'){const protocol=req.headers['x-forwarded-proto']||'https',host=req.headers['x-forwarded-host']||req.headers.host||'localhost',url=new URL(req.url,`${protocol}://${host}`),mode=url.searchParams.get('hub.mode'),token=url.searchParams.get('hub.verify_token'),challenge=url.searchParams.get('hub.challenge');if(mode&&token){if(mode==='subscribe'&&String(token).trim()===String(VERIFY_TOKEN).trim()){console.log('[VERIFY] Webhook verified ✓');return res.status(200).send(challenge);}return res.status(403).send('Verification Token Mismatch');}return res.status(200).send('Webhook Active');}
+  if(req.method==='POST'){
+    const rawBody=await getRawBody(req);if(!WHATSAPP_APP_SECRET){console.error('[SECURITY] WHATSAPP_APP_SECRET is required for POST webhooks');return res.status(500).send('Webhook security configuration missing');}const signature=req.headers['x-hub-signature-256']||req.headers['X-Hub-Signature-256'];if(!verifyMetaSignature(rawBody,signature,WHATSAPP_APP_SECRET)){console.warn('[SECURITY] Invalid Meta webhook signature');return res.status(401).send('Invalid signature');}
+    let body=req.body;if(Buffer.isBuffer(body))body=body.toString('utf8');if(body==null||body==='')body=rawBody.toString('utf8');if(typeof body==='string'){try{body=JSON.parse(body);}catch(e){console.warn('[WEBHOOK] Invalid JSON body');return res.status(400).send('Invalid JSON');}}
+    const entry=body?.entry?.[0],value=entry?.changes?.[0]?.value,messages=Array.isArray(value?.messages)?value.messages:[],contacts=Array.isArray(value?.contacts)?value.contacts:[];if(!messages.length)return res.status(200).send('EVENT_RECEIVED');if(!WHATSAPP_TOKEN||!PHONE_NUMBER_ID){console.error('[CONFIG] Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID');return res.status(200).send('EVENT_RECEIVED');}
+    const processPromise=(async()=>{const processingMessageId=messages[0]?.id||'';try{const message=messages[0];if(!message)return;const fromNumber=message.from;if(!fromNumber){console.error('[ERROR] message.from missing');return;}
+      const persistentClaim=await claimProcessedMessage(DATABASE_URL,message?.id||'',fromNumber);if(persistentClaim===false){console.log('[DEDUP DB] Skip:',message?.id);return;}if(persistentClaim===null)console.warn('[DEDUP DB] Persistent dedup unavailable; using instance-local fallback');if(alreadyProcessed(message?.id)){console.log('[DEDUP] Skip:',message?.id);return;}
+      const isAudioIncoming=message.type==='audio'||message.type==='voice',contact=contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null,customerName=(contact?.profile?.name||'').trim();let history=[];const dbData=await dbGet(DATABASE_URL,fromNumber);if(dbData)history=dbData.history||[];else{if(!chatHistories.has(fromNumber))chatHistories.set(fromNumber,[]);history=chatHistories.get(fromNumber);}const MAX_HISTORY=20;let userMessageText='';
+      if(message.type==='text')userMessageText=fixCities(message.text?.body||'');else if(isAudioIncoming&&GROQ_API_KEY&&WHATSAPP_TOKEN){console.log('[STEP A] Fetching audio from Meta...');const mediaId=message.audio?.id||message.voice?.id;if(!mediaId)userMessageText='[Customer ne voice message bheja — unse poochein kya chahiye]';else{const mediaRes=await fetch(`https://graph.facebook.com/v20.0/${mediaId}`,{headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`}});if(!mediaRes.ok){console.error('[STEP A FAIL] Media fetch:',mediaRes.status);userMessageText='[Customer ne voice message bheja — unse poochein kya chahiye]';}else{const mediaData=await mediaRes.json();if(!mediaData?.url){console.error('[STEP A FAIL] mediaData.url missing; keys=',Object.keys(mediaData||{}).join(','));userMessageText='[Customer ne voice message bheja — unse poochein kya chahiye]';}else{const audioStream=await fetch(mediaData.url,{headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`}});if(!audioStream.ok){console.error('[STEP A FAIL] Audio download:',audioStream.status);userMessageText='[Customer ne voice message bheja — unse poochein kya chahiye]';}else{const arrayBuffer=await audioStream.arrayBuffer(),formData=new globalThis.FormData(),blob=new globalThis.Blob([arrayBuffer],{type:'audio/ogg'});formData.append('file',blob,'voice.ogg');formData.append('model','whisper-large-v3-turbo');formData.append('language','ur');formData.append('prompt','Fatima Arts, Zara, Faisalabad, Lahore, Karachi, lawn, khaddar, marina, velvet, price, delivery, pakistani customer');const groqRes=await fetch('https://api.groq.com/openai/v1/audio/transcriptions',{method:'POST',headers:{Authorization:`Bearer ${GROQ_API_KEY}`},body:formData});if(groqRes.ok){const groqData=await groqRes.json();userMessageText=fixCities((groqData.text||'').trim());console.log('[STEP A SUCCESS] Transcribed:',userMessageText.slice(0,80));}else{console.error('[STEP A FAIL] Groq:',groqRes.status);userMessageText='[Customer ne voice message bheja — unse poochein kya chahiye]';}}}}}}else if(message.type==='image')userMessageText='[Customer ne image bheji — poochein kya chahiye]';else if(message.type==='sticker')userMessageText='[Customer ne sticker bheja — friendly acknowledgment do]';else if(message.type==='document')userMessageText='[Customer ne document bheja — poochein kya chahiye]';else userMessageText='[Customer ne kuch bheja — friendly acknowledgment do]';
+      if(!userMessageText.trim())userMessageText='Assalam o Alaikum';
+      const languageLock=getLanguageInstruction(userMessageText,history);
+      const SYSTEM_PROMPT=`Aap Zara hain — Fatima Arts ki warm sales agent, Pakistan ka premium unstitched fabric brand. Aap robot nahi hain. Kabhi AI, automation ya software ka zikr na karein.\n\nCurrent time (PKT): ${getPKT()}\n\n=== LANGUAGE & RESPONSE STYLE ===\nHamesha Roman Urdu (English letters) mein jawab dein.\nLehjha: Khaalis Pakistani Urdu — dostana aur professional.\nLANGUAGE LOCK (deterministic): ${languageLock.instruction}\n\n=== CITIES (Strict spelling) ===\nFaisalabad, Lahore, Karachi, Islamabad, Rawalpindi, Multan, Gujranwala, Peshawar, Quetta.\n\n=== IDENTITY ===\nName: Zara — Fatima Arts team member\nHar message mein customer ka name use karein (agar maloom ho).\nMax 2-3 emojis per message.\n\n=== TIME-BASED GREETING ===\n06:00–12:00 → Subah bakhair! 🌅\n12:00–17:00 → Khariyat se hain? ☀️\n17:00–21:00 → Sham bakhair! ✨\n21:00–06:00 → Assalam o Alaikum! (Mukhtasar jawab)\n\n=== PRODUCTS (All Unstitched) ===\n1. Lawn/Printed • 2. Embroidered • 3. Linen/Khaddar • 4. Cottel • 5. Karandi • 6. Marina • 7. Velvet • 8. Dhanak\n\n=== PRICING ===\nRetail: 1 suit = 3,600 rupees | Delivery separate | No minimum\nWholesale (10+ suits): 2,999/suit | 10 suits = 29,990 | City delivery free\n\n=== PAYMENT ===\n1. JazzCash → ${JAZZCASH_NUMBER||'boss se confirm karein'}\n2. EasyPaisa → ${EASYPAISA_NUMBER||'boss se confirm karein'}\n3. COD — Delivery par payment\n\n=== ORDER FORMAT ===\nOrder confirm hone par yeh tag dein (apni line par):\n[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]\n\n=== NEVER DO ===\n❌ AI/bot/automated kehna\n❌ Baghair boss ke discount dena\n❌ Competitors ka zikr karna`;
+      const geminiContents=[...history,{role:'user',parts:[{text:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText}]}],oaiMessages=[{role:'system',content:SYSTEM_PROMPT},...history.map(c=>({role:c.role==='model'?'assistant':'user',content:c.parts?.[0]?.text||''})),{role:'user',content:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText}];let aiReply='';
+      if(!aiReply&&GEMINI_API_KEY){for(const model of['gemini-3.7-flash','gemini-3.6-flash']){if(aiReply)break;const cbKey=`g:${model}`;if(isBlocked(cbKey))continue;for(let att=1;att<=2;att++){if(aiReply)break;const ctrl=new AbortController(),tid=setTimeout(()=>ctrl.abort(),20000);try{const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,{method:'POST',headers:{'Content-Type':'application/json'},signal:ctrl.signal,body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:800}})});if(r.ok){const d=await r.json(),raw=d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();if(raw)aiReply=raw.replace(/[*_~`#]/g,'').trim();break;}if(r.status===429){blockFor(cbKey,5*60*1000);break;}if(r.status===503&&att<2){await sleep(2000);continue;}break;}catch(e){const abort=e?.name==='AbortError'||String(e?.message||'').includes('abort');if(abort&&att<2){await sleep(2000);continue;}console.warn('[GEMINI]',e?.message||e);break;}finally{clearTimeout(tid);}}}}
+      if(!aiReply&&CEREBRAS_API_KEY&&!isBlocked('cerebras')){try{const r=await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages});if(r.ok){const d=await r.json(),raw=d.choices?.[0]?.message?.content?.trim();if(raw)aiReply=raw.replace(/[*_~`#]/g,'').trim();}else if(r.status===429)blockFor('cerebras',5*60*1000);else console.warn('[CEREBRAS]',r.status);}catch(e){console.warn('[CEREBRAS]',e?.message||e);}}
+      if(!aiReply&&GROQ_API_KEY){for(const gm of['openai/gpt-oss-120b','qwen/qwen3.6-27b']){if(aiReply)break;const cbKey=`gr:${gm}`;if(isBlocked(cbKey))continue;try{const r=await oaiChat({url:'https://api.groq.com/openai/v1',key:GROQ_API_KEY,model:gm,messages:oaiMessages});if(r.ok){const d=await r.json(),raw=d.choices?.[0]?.message?.content?.trim();if(raw){aiReply=raw.replace(/[*_~`#]/g,'').trim();break;}}if(r.status===429){blockFor(cbKey,5*60*1000);break;}console.warn('[GROQ LLM]',r.status);}catch(e){console.warn('[GROQ LLM]',e?.message||e);break;}}}
+      if(!aiReply&&OPENROUTER_API_KEY&&!isBlocked('or:mistral')){try{const r=await oaiChat({url:'https://openrouter.ai/api/v1',key:OPENROUTER_API_KEY,model:'mistralai/mistral-7b-instruct:free',messages:oaiMessages});if(r.ok){const d=await r.json(),raw=d.choices?.[0]?.message?.content?.trim();if(raw)aiReply=raw.replace(/[*_~`#]/g,'').trim();}else if(r.status===429)blockFor('or:mistral',5*60*1000);else console.warn('[OPENROUTER]',r.status);}catch(e){console.warn('[OPENROUTER]',e?.message||e);}}
+      if(!aiReply)aiReply='Thori dair mein wapas aati hoon, system busy hai.';
+      const orderTag=parseOrderTag(aiReply);if(orderTag){aiReply=aiReply.replace(/\[ORDER:[^\]]+\]/gi,'').trim();const confirmed=explicitOrderConfirmation(userMessageText);await saveToSheet(GOOGLE_SHEETS_ID,GOOGLE_SA_EMAIL,GOOGLE_SA_KEY,orderTag,fromNumber,message?.id||'',confirmed,DATABASE_URL);}aiReply=fixCities(aiReply);if(!aiReply.trim())aiReply='Shukriya sabr ka 🙏';
+      history.push({role:'user',parts:[{text:userMessageText}]});history.push({role:'model',parts:[{text:aiReply}]});if(history.length>MAX_HISTORY)history.splice(0,history.length-MAX_HISTORY);chatHistories.set(fromNumber,history);await dbSave(DATABASE_URL,fromNumber,customerName,history);
+      let voiceSentSuccess=false;if(isAudioIncoming&&ELEVENLABS_API_KEY&&WHATSAPP_TOKEN&&PHONE_NUMBER_ID){try{console.log('[STEP C] ElevenLabs TTS...');const ttsRes=await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,{method:'POST',headers:{'xi-api-key':ELEVENLABS_API_KEY,'Content-Type':'application/json','Accept':'audio/mpeg'},body:JSON.stringify({text:aiReply,model_id:'eleven_multilingual_v2',voice_settings:{stability:0.5,similarity_boost:0.75}});if(ttsRes.ok){const arrayBuffer=await ttsRes.arrayBuffer(),mediaFormData=new globalThis.FormData(),audioBlob=new globalThis.Blob([arrayBuffer],{type:'audio/mpeg'});mediaFormData.append('messaging_product','whatsapp');mediaFormData.append('file',audioBlob,'voice.mp3');mediaFormData.append('type','audio/mpeg');const uploadRes=await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`,{method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`},body:mediaFormData});const uploadData=await uploadRes.json();if(uploadData?.id){const sendVoiceRes=await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`,{method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:fromNumber,type:'audio',audio:{id:uploadData.id}})});if(sendVoiceRes.ok){voiceSentSuccess=true;console.log('[STEP C SUCCESS] ElevenLabs Voice note sent!');}else console.error('[STEP C FAIL] WhatsApp voice send:',sendVoiceRes.status);}else console.error('[STEP C FAIL] WhatsApp media upload:',uploadRes.status);}else{const errBody=await ttsRes.text();console.error('[STEP C FAIL] ElevenLabs:',ttsRes.status,errBody.slice(0,100));}}catch(e){console.error('[STEP C EXC]',e?.message||e);}}
+      if(!voiceSentSuccess){const textRes=await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`,{method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',to:fromNumber,type:'text',text:{body:aiReply}})});if(!textRes.ok)console.error('[STEP D FAIL] Text send:',textRes.status);else console.log('[STEP D SUCCESS] Text sent.');}
+      await markProcessedMessage(DATABASE_URL,processingMessageId,'processed');
+    }catch(err){console.error('[CRITICAL ERROR]',err?.message||err);await markProcessedMessage(DATABASE_URL,processingMessageId,'failed');}})();
+    waitUntil(processPromise);return res.status(200).send('EVENT_RECEIVED');
   }
-  return Buffer.alloc(0);
-}
-function verifyMetaSignature(rawBody, signature, appSecret) {
-  if (!appSecret || !signature) return false;
-  const [scheme, hex]=String(signature).split('=',2);
-  if (scheme!=='sha256' || !/^[a-f0-9]{64}$/i.test(hex||'')) return false;
-  const digest=crypto.createHmac('sha256',appSecret).update(rawBody).digest('hex');
-  return timingSafeEqualHex(digest,hex);
-}
-
-// Vercel must not parse the request body before Meta signature verification.
-module.exports.config = { api: { bodyParser: false } };
-
-// ═════════════════════════════════════════════════════════════════════════════
-module.exports = async (req, res) => {
-  if (req.url?.includes('favicon.ico')) return res.status(204).end();
-  midnightReset();
-
-  const WHATSAPP_TOKEN     = (process.env.WHATSAPP_TOKEN     ||'').trim();
-  const PHONE_NUMBER_ID    = (process.env.PHONE_NUMBER_ID    ||'').trim();
-  const VERIFY_TOKEN       = (process.env.VERIFY_TOKEN       ||'').trim();
-  const GEMINI_API_KEY     = (process.env.GEMINI_API_KEY     ||'').trim();
-  const GROQ_API_KEY       = (process.env.GROQ_API_KEY       ||'').trim();
-  const ELEVENLABS_API_KEY = (process.env.ELEVENLABS_API_KEY ||'').trim();
-  const ELEVENLABS_VOICE_ID= (process.env.ELEVENLABS_VOICE_ID||'EXAVITQu4vr4xnSDxMaL').trim();
-  const JAZZCASH_NUMBER    = (process.env.JAZZCASH_NUMBER    ||'').trim();
-  const EASYPAISA_NUMBER   = (process.env.EASYPAISA_NUMBER   ||'').trim();
-  const CEREBRAS_API_KEY   = (process.env.CEREBRAS_API_KEY   ||'').trim();
-  const OPENROUTER_API_KEY = (process.env.OPENROUTER_API_KEY ||'').trim();
-  const DATABASE_URL       = (process.env.DATABASE_URL       ||'').trim();
-  const GOOGLE_SHEETS_ID   = (process.env.GOOGLE_SHEETS_ID   ||'').trim();
-  const GOOGLE_SA_EMAIL    = (process.env.GOOGLE_SA_EMAIL    ||'').trim();
-  const GOOGLE_SA_KEY      = (process.env.GOOGLE_SA_KEY      ||'').trim();
-  const WHATSAPP_APP_SECRET = (process.env.WHATSAPP_APP_SECRET || '').trim();
-
-  // ── GET: Webhook Verification ───────────────────────────────────────────
-  if (req.method === 'GET') {
-    const protocol = req.headers['x-forwarded-proto']||'https';
-    const host     = req.headers['x-forwarded-host']||req.headers.host||'localhost';
-    const url      = new URL(req.url, `${protocol}://${host}`);
-    const mode     = url.searchParams.get('hub.mode');
-    const token    = url.searchParams.get('hub.verify_token');
-    const challenge= url.searchParams.get('hub.challenge');
-    if (mode && token) {
-      if (mode==='subscribe' && String(token).trim()===String(VERIFY_TOKEN).trim()) {
-        console.log('[VERIFY] Webhook verified ✓');
-        return res.status(200).send(challenge);
-      }
-      return res.status(403).send('Verification Token Mismatch');
-    }
-    return res.status(200).send('Webhook Active');
-  }
-
-  // ── POST: Message Handler ────────────────────────────────────────────────
-  if (req.method === 'POST') {
-    const rawBody = await getRawBody(req);
-    if (WHATSAPP_APP_SECRET) {
-      const signature = req.headers['x-hub-signature-256'] || req.headers['X-Hub-Signature-256'];
-      if (!verifyMetaSignature(rawBody, signature, WHATSAPP_APP_SECRET)) {
-        console.warn('[SECURITY] Invalid Meta webhook signature');
-        return res.status(401).send('Invalid signature');
-      }
-    } else {
-      console.error('[SECURITY] WHATSAPP_APP_SECRET not configured; webhook signature verification is disabled');
-    }
-
-    let body = req.body;
-    if (Buffer.isBuffer(body)) body=body.toString('utf8');
-    if (body == null || body === '') body=rawBody.toString('utf8');
-    if (typeof body==='string') { try { body=JSON.parse(body); } catch(e) { console.warn('[WEBHOOK] Invalid JSON body'); return res.status(400).send('Invalid JSON'); } }
-
-    const entry    = body?.entry?.[0];
-    const value    = entry?.changes?.[0]?.value;
-    const messages = Array.isArray(value?.messages) ? value.messages : [];
-    const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
-
-    if (!messages.length) return res.status(200).send('EVENT_RECEIVED');
-    if (!WHATSAPP_TOKEN||!PHONE_NUMBER_ID) {
-      console.error('[CONFIG] Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID');
-      return res.status(200).send('EVENT_RECEIVED');
-    }
-
-    const processPromise = (async () => {
-      const processingMessageId = messages[0]?.id || '';
-      try {
-        const message = messages[0];
-        if (!message) return;
-
-        const fromNumber = message.from;
-        if (!fromNumber) { console.error('[ERROR] message.from missing'); return; }
-
-        const persistentClaim = await claimProcessedMessage(DATABASE_URL, message?.id || '', fromNumber);
-        if (persistentClaim === false) { console.log('[DEDUP DB] Skip:', message?.id); return; }
-        if (persistentClaim === null) console.warn('[DEDUP DB] Persistent dedup unavailable; using instance-local fallback');
-        if (alreadyProcessed(message?.id)) {
-          console.log('[DEDUP] Skip:', message?.id);
-          return;
-        }
-
-        const isAudioIncoming = message.type==='audio' || message.type==='voice';
-        const contact         = contacts.find(c=>c?.wa_id===fromNumber)||contacts[0]||null;
-        const customerName    = (contact?.profile?.name||'').trim();
-
-        let history = [];
-        const dbData = await dbGet(DATABASE_URL, fromNumber);
-        if (dbData) history = dbData.history||[];
-        else {
-          if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, []);
-          history = chatHistories.get(fromNumber);
-        }
-        const MAX_HISTORY = 20;
-        let userMessageText = '';
-
-        // ── STEP A: Text extract or Groq Whisper transcription ──────────────
-        if (message.type==='text') {
-          userMessageText = fixCities(message.text?.body||'');
-        } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
-          console.log('[STEP A] Fetching audio from Meta...');
-          const mediaId = message.audio?.id || message.voice?.id;
-          if (!mediaId) userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-          else {
-            const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
-            if (!mediaRes.ok) {
-              console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
-              userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-            } else {
-              const mediaData = await mediaRes.json();
-              if (!mediaData?.url) {
-                console.error('[STEP A FAIL] mediaData.url missing:', JSON.stringify(mediaData));
-                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-              } else {
-                const audioStream = await fetch(mediaData.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
-                if (!audioStream.ok) {
-                  console.error('[STEP A FAIL] Audio download:', audioStream.status);
-                  userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-                } else {
-                  const arrayBuffer = await audioStream.arrayBuffer();
-                  const formData = new globalThis.FormData();
-                  const blob = new globalThis.Blob([arrayBuffer], { type:'audio/ogg' });
-                  formData.append('file', blob, 'voice.ogg');
-                  formData.append('model', 'whisper-large-v3-turbo');
-                  formData.append('language', 'ur');
-                  formData.append('prompt', 'Fatima Arts, Zara, Faisalabad, Lahore, Karachi, lawn, khaddar, marina, velvet, price, delivery, pakistani customer');
-                  const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', { method:'POST', headers:{ Authorization: `Bearer ${GROQ_API_KEY}` }, body:formData });
-                  if (groqRes.ok) {
-                    const groqData=await groqRes.json();
-                    userMessageText=fixCities((groqData.text||'').trim());
-                    console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0,80));
-                  } else {
-                    console.error('[STEP A FAIL] Groq:', groqRes.status);
-                    userMessageText='[Customer ne voice message bheja — unse poochein kya chahiye]';
-                  }
-                }
-              }
-            }
-          }
-        } else if (message.type==='image') userMessageText='[Customer ne image bheji — poochein kya chahiye]';
-        else if (message.type==='sticker') userMessageText='[Customer ne sticker bheja — friendly acknowledgment do]';
-        else if (message.type==='document') userMessageText='[Customer ne document bheja — poochein kya chahiye]';
-        else userMessageText='[Customer ne kuch bheja — poochein kya chahiye]';
-
-        if (!userMessageText.trim()) userMessageText = 'Assalam o Alaikum';
-
-        const SYSTEM_PROMPT = `Aap Zara hain — Fatima Arts ki warm sales agent, Pakistan ka premium unstitched fabric brand. Aap robot nahi hain. Kabhi AI, automation ya software ka zikr na karein.
-
-Current time (PKT): ${getPKT()}
-
-=== LANGUAGE & RESPONSE STYLE ===
-Hamesha Roman Urdu (English letters) mein jawab dein. ElevenLabs voice ke liye Roman Urdu zaroori hai taake accent theek rahe.
-Lehjha: Khaalis Pakistani Urdu — dostana aur professional.
-
-=== CITIES (Strict spelling) ===
-Faisalabad, Lahore, Karachi, Islamabad, Rawalpindi, Multan, Gujranwala, Peshawar, Quetta.
-
-=== IDENTITY ===
-Name: Zara — Fatima Arts team member
-Har message mein customer ka name use karein (agar maloom ho).
-Max 2-3 emojis per message.
-
-=== TIME-BASED GREETING ===
-06:00–12:00 → Subah bakhair! 🌅
-12:00–17:00 → Khariyat se hain? ☀️
-17:00–21:00 → Sham bakhair! ✨
-21:00–06:00 → Assalam o Alaikum! (Mukhtasar jawab)
-
-=== PRODUCTS (All Unstitched) ===
-1. Lawn/Printed • 2. Embroidered • 3. Linen/Khaddar • 4. Cottel • 5. Karandi • 6. Marina • 7. Velvet • 8. Dhanak
-
-=== PRICING ===
-Retail: 1 suit = 3,600 rupees | Delivery separate | No minimum
-Wholesale (10+ suits): 2,999/suit | 10 suits = 29,990 | City delivery free
-
-=== PAYMENT ===
-1. JazzCash   → ${JAZZCASH_NUMBER||'boss se confirm karein'}
-2. EasyPaisa → ${EASYPAISA_NUMBER||'boss se confirm karein'}
-3. COD — Delivery par payment
-
-=== ORDER FORMAT ===
-Order confirm hone par yeh tag dein (apni line par):
-[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]
-
-=== NEVER DO ===
-❌ AI/bot/automated kehna
-❌ Baghair boss ke discount dena
-❌ Competitors ka zikr karna`;
-
-        const geminiContents=[...history,{role:'user',parts:[{text:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText}]}];
-        const oaiMessages=[{role:'system',content:SYSTEM_PROMPT},...history.map(c=>({role:c.role==='model'?'assistant':'user',content:c.parts?.[0]?.text||''})),{role:'user',content:(customerName?`Customer name: ${customerName}\n`:'')+userMessageText}];
-        let aiReply='';
-
-        // ── STEP B: AI CHAIN ────────────────────────────────────────────────
-        if (!aiReply && GEMINI_API_KEY) {
-          for (const model of ['gemini-3.7-flash','gemini-3.6-flash']) {
-            if (aiReply) break;
-            const cbKey=`g:${model}`; if(isBlocked(cbKey)) continue;
-            for(let att=1;att<=2;att++) {
-              if(aiReply) break;
-              const ctrl=new AbortController(), tid=setTimeout(()=>ctrl.abort(),20000);
-              try {
-                const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,{method:'POST',headers:{'Content-Type':'application/json'},signal:ctrl.signal,body:JSON.stringify({system_instruction:{parts:[{text:SYSTEM_PROMPT}]},contents:geminiContents,generationConfig:{temperature:0.7,maxOutputTokens:800}})});
-                if(r.ok){const d=await r.json();const raw=d.candidates?.[0]?.content?.parts?.[0]?.text?.trim();if(raw)aiReply=raw.replace(/[*_~`#]/g,'').trim();break;}
-                if(r.status===429){blockFor(cbKey,5*60*1000);break;}
-                if(r.status===503&&att<2){await sleep(2000);continue;}
-                break;
-              } catch(e) {
-                const abort=e?.name==='AbortError'||String(e?.message||'').includes('abort');
-                if(abort&&att<2){await sleep(2000);continue;}
-                console.warn('[GEMINI]',e?.message||e); break;
-              } finally { clearTimeout(tid); }
-            }
-          }
-        }
-        if(!aiReply&&CEREBRAS_API_KEY&&!isBlocked('cerebras')) {
-          try { const r=await oaiChat({url:'https://api.cerebras.ai/v1',key:CEREBRAS_API_KEY,model:'llama-3.3-70b',messages:oaiMessages}); if(r.ok){const d=await r.json();const raw=d.choices?.[0]?.message?.content?.trim();if(raw)aiReply=raw.replace(/[*_~`#]/g,'').trim();} else if(r.status===429) blockFor('cerebras',5*60*1000); else console.warn('[CEREBRAS]',r.status); }
-          catch(e){console.warn('[CEREBRAS]',e?.message||e);}
-        }
-        if(!aiReply&&GROQ_API_KEY) {
-          for(const gm of ['openai/gpt-oss-120b','qwen/qwen3.6-27b']) {
-            if(aiReply)break; const cbKey=`gr:${gm}`; if(isBlocked(cbKey))continue;
-            try { const r=await oaiChat({url:'https://api.groq.com/openai/v1',key:GROQ_API_KEY,model:gm,messages:oaiMessages}); if(r.ok){const d=await r.json();const raw=d.choices?.[0]?.message?.content?.trim();if(raw){aiReply=raw.replace(/[*_~`#]/g,'').trim();break;}} if(r.status===429){blockFor(cbKey,5*60*1000);break;} console.warn('[GROQ LLM]',r.status); }
-            catch(e){console.warn('[GROQ LLM]',e?.message||e);break;}
-          }
-        }
-        if(!aiReply&&OPENROUTER_API_KEY&&!isBlocked('or:mistral')) {
-          try { const r=await oaiChat({url:'https://openrouter.ai/api/v1',key:OPENROUTER_API_KEY,model:'mistralai/mistral-7b-instruct:free',messages:oaiMessages}); if(r.ok){const d=await r.json();const raw=d.choices?.[0]?.message?.content?.trim();if(raw)aiReply=raw.replace(/[*_~`#]/g,'').trim();} else if(r.status===429) blockFor('or:mistral',5*60*1000); else console.warn('[OPENROUTER]',r.status); }
-          catch(e){console.warn('[OPENROUTER]',e?.message||e);}
-        }
-        if(!aiReply) aiReply='Thori dair mein wapas aati hoon, system busy hai.';
-
-        const orderTag=parseOrderTag(aiReply);
-        if(orderTag) {
-          aiReply=aiReply.replace(/\[ORDER:[^\]]+\]/gi,'').trim();
-          const confirmed=explicitOrderConfirmation(userMessageText);
-          await saveToSheet(GOOGLE_SHEETS_ID,GOOGLE_SA_EMAIL,GOOGLE_SA_KEY,orderTag,fromNumber,message?.id||'',confirmed,DATABASE_URL);
-        }
-        aiReply=fixCities(aiReply);
-        if(!aiReply.trim()) aiReply='Shukriya sabr ka 🙏';
-
-        history.push({role:'user',parts:[{text:userMessageText}]});
-        history.push({role:'model',parts:[{text:aiReply}]});
-        if(history.length>MAX_HISTORY) history.splice(0,history.length-MAX_HISTORY);
-        chatHistories.set(fromNumber,history);
-        await dbSave(DATABASE_URL,fromNumber,customerName,history);
-
-        let voiceSentSuccess=false;
-        if(isAudioIncoming&&ELEVENLABS_API_KEY&&WHATSAPP_TOKEN&&PHONE_NUMBER_ID) {
-          try {
-            console.log('[STEP C] ElevenLabs TTS...');
-            const ttsRes=await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,{method:'POST',headers:{'xi-api-key':ELEVENLABS_API_KEY,'Content-Type':'application/json','Accept':'audio/mpeg'},body:JSON.stringify({text:aiReply,model_id:'eleven_multilingual_v2',voice_settings:{stability:0.5,similarity_boost:0.75}})});
-            if(ttsRes.ok) {
-              const arrayBuffer=await ttsRes.arrayBuffer(); const mediaFormData=new globalThis.FormData(); const audioBlob=new globalThis.Blob([arrayBuffer],{type:'audio/mpeg'});
-              mediaFormData.append('messaging_product','whatsapp'); mediaFormData.append('file',audioBlob,'voice.mp3'); mediaFormData.append('type','audio/mpeg');
-              const uploadRes=await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`,{method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`},body:mediaFormData});
-              const uploadData=await uploadRes.json();
-              if(uploadData?.id) {
-                const sendVoiceRes=await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`,{method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:fromNumber,type:'audio',audio:{id:uploadData.id}})});
-                if(sendVoiceRes.ok){voiceSentSuccess=true;console.log('[STEP C SUCCESS] ElevenLabs Voice note sent!');}
-                else console.error('[STEP C FAIL] WhatsApp voice send:',sendVoiceRes.status);
-              } else console.error('[STEP C FAIL] WhatsApp media upload:',uploadRes.status);
-            } else { const errBody=await ttsRes.text(); console.error('[STEP C FAIL] ElevenLabs:',ttsRes.status,errBody.slice(0,100)); }
-          } catch(e){console.error('[STEP C EXC]',e?.message||e);}
-        }
-        if(!voiceSentSuccess) {
-          const textRes=await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`,{method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',to:fromNumber,type:'text',text:{body:aiReply}})});
-          if(!textRes.ok) console.error('[STEP D FAIL] Text send:',textRes.status); else console.log('[STEP D SUCCESS] Text sent.');
-        }
-
-        await markProcessedMessage(DATABASE_URL,processingMessageId,'processed');
-      } catch(err) {
-        console.error('[CRITICAL ERROR]',err?.message||err);
-        await markProcessedMessage(DATABASE_URL,processingMessageId,'failed');
-      }
-    })();
-
-    waitUntil(processPromise);
-    return res.status(200).send('EVENT_RECEIVED');
-  }
-
   return res.status(200).send('OK');
 };
