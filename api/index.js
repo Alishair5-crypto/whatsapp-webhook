@@ -21,17 +21,16 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
 
 if (OriginalFormData && !globalThis.__zaraVoiceFormDataPatched) {
   globalThis.__zaraVoiceFormDataPatched = true;
-  class VoiceCompatibleFormData extends OriginalFormData {
-    append(name, value, filename) {
-      if (name === 'file' && filename === 'voice.mp3' && value instanceof Blob) {
-        value = new Blob([value], { type: 'audio/ogg' });
-        filename = 'voice.ogg';
-      }
-      if (name === 'type' && value === 'audio/mpeg') value = 'audio/ogg';
-      return super.append(name, value, filename);
+  const originalAppend = OriginalFormData.prototype.append;
+  OriginalFormData.prototype.append = function(name, value, filename) {
+    if (name === 'file' && filename === 'voice.mp3' && value instanceof Blob) {
+      value = new Blob([value], { type: 'audio/ogg' });
+      filename = 'voice.ogg';
     }
-  }
-  globalThis.FormData = VoiceCompatibleFormData;
+    if (name === 'type' && value === 'audio/mpeg') value = 'audio/ogg';
+    if (filename === undefined) return originalAppend.call(this, name, value);
+    return originalAppend.call(this, name, value, filename);
+  };
 }
 
 module.exports = require('../index.js');
