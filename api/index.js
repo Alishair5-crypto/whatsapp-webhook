@@ -1,8 +1,10 @@
 // Voice-note compatibility wrapper.
 // Keeps the verified voice pipeline intact and adds a TTS/text Urdu normalization
-// layer. Original AI reasoning/history is untouched; only outgoing customer text
-// and ElevenLabs TTS input are normalized for clearer Pakistani Urdu pronunciation.
+// layer. Original AI reasoning/history is untouched; memory is an additive wrapper.
+const { AsyncLocalStorage } = require('async_hooks');
+const { getMemoryContext, remember } = require('../zara-memory');
 const originalFetch = globalThis.fetch;
+const memoryContext = new AsyncLocalStorage();
 
 const URDU_NORMALIZATION = [
   // Fabric / product vocabulary
@@ -47,7 +49,6 @@ const URDU_NORMALIZATION = [
 function normalizeUrdu(text) {
   if (typeof text !== 'string' || !text) return text;
   let out = text.normalize('NFC');
-  // Remove emojis/symbol pictographs from TTS only; keep them for text.
   for (const [from, to] of URDU_NORMALIZATION) out = out.split(from).join(to);
   out = out.replace(/[\u200B-\u200D\uFEFF]/g, '');
   out = out.replace(/\s{2,}/g, ' ').trim();
@@ -70,11 +71,72 @@ function isWhatsAppSend(url) {
   return url && /graph\.facebook\.com\/v\d+\.\d+\//.test(url) && /\/messages(?:\?|$)/.test(url);
 }
 
+function isChatCompletion(url) {
+  return url && /\/chat\/completions(?:\?|$)/.test(url);
+}
+
+async function injectMemoryIntoAI(url, init, ctx) {
+  if (!ctx || !init || typeof init.body !== 'string') return init;
+  let payload;
+  try { payload = JSON.parse(init.body); } catch (_) { return init; }
+  if (!ctx.phone) return init;
+
+  let query = ctx.userText || '';
+  try {
+    const last = payload?.contents?.[payload.contents.length - 1]?.parts?.[0]?.text;
+    if (typeof last === 'string') query = last;
+  } catch (_) {}
+  if (!query) {
+    try {
+      const last = payload?.messages?.[payload.messages.length - 1]?.content;
+      if (typeof last === 'string') query = last;
+    } catch (_) {}
+  }
+  if (query) ctx.userText = query.replace(/^Customer name:\s*[^\n]+\n/i, '').trim();
+
+  const memory = await getMemoryContext(process.env.DATABASE_URL || '', ctx.phone, ctx.userText);
+  if (!memory) return init;
+
+  if (Array.isArray(payload.contents)) {
+    const system = payload.system_instruction?.parts?.[0]?.text;
+    if (typeof system === 'string') payload.system_instruction.parts[0].text = system + memory;
+  }
+
+  if (Array.isArray(payload.messages)) {
+    const systemIndex = payload.messages.findIndex(m => m?.role === 'system');
+    if (systemIndex >= 0 && typeof payload.messages[systemIndex].content === 'string') {
+      payload.messages[systemIndex].content += memory;
+    }
+  }
+
+  return { ...init, body: JSON.stringify(payload) };
+}
+
+async function maybeRemember(ctx) {
+  if (!ctx || ctx.remembered || !ctx.phone || !ctx.msgId || !ctx.userText) return;
+  if (!ctx.aiReply) return;
+  ctx.remembered = true;
+  await remember(
+    process.env.DATABASE_URL || '',
+    ctx.phone,
+    ctx.msgId,
+    ctx.userText,
+    ctx.aiReply,
+    ctx.customerName
+  );
+}
+
 if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
   globalThis.__zaraVoiceFetchPatched = true;
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input?.url;
     const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined));
+    const ctx = memoryContext.getStore();
+
+    // Inject verified customer memory only into outbound LLM requests.
+    if (ctx && (isChatCompletion(url) || (url && url.includes('generativelanguage.googleapis.com')))) {
+      init = await injectMemoryIntoAI(url, init, ctx);
+    }
 
     // ElevenLabs: use the Urdu-capable v3 model and pronunciation-normalized text.
     if (isElevenLabsTTS(url)) {
@@ -85,11 +147,12 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
           const payload = JSON.parse(body);
           payload.model_id = 'eleven_v3';
           payload.language_code = 'ur';
-          if (typeof payload.text === 'string') payload.text = normalizeUrdu(payload.text);
+          if (typeof payload.text === 'string') {
+            payload.text = normalizeUrdu(payload.text);
+            if (ctx) ctx.aiReply = payload.text;
+          }
           body = JSON.stringify(payload);
-        } catch (_) {
-          // Preserve non-JSON bodies.
-        }
+        } catch (_) {}
       }
 
       const response = await originalFetch(input, { ...init, headers, body });
@@ -110,22 +173,43 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
       return response;
     }
 
-    // WhatsApp text: apply the same Urdu wording normalization to customer-visible text.
-    // This is limited to outbound /messages calls and does not alter AI prompts/history.
+    // WhatsApp text/voice sends: preserve the active outbound behavior and capture
+    // only customer-visible successful replies for durable memory extraction.
     if (isWhatsAppSend(url) && typeof init.body === 'string') {
       try {
         const payload = JSON.parse(init.body);
         if (payload?.type === 'text' && typeof payload?.text?.body === 'string') {
           payload.text.body = normalizeUrduText(payload.text.body);
-          return originalFetch(input, { ...init, headers, body: JSON.stringify(payload) });
+          if (ctx) ctx.aiReply = payload.text.body;
+          const response = await originalFetch(input, { ...init, headers, body: JSON.stringify(payload) });
+          if (response.ok) await maybeRemember(ctx);
+          return response;
         }
-      } catch (_) {
-        // Preserve the original request if it is not JSON.
-      }
+        if (payload?.type === 'audio' && ctx?.aiReply) {
+          const response = await originalFetch(input, { ...init, headers });
+          if (response.ok) await maybeRemember(ctx);
+          return response;
+        }
+      } catch (_) {}
     }
 
     return originalFetch(input, init);
   };
 }
 
-module.exports = require('../index.js');
+const originalHandler = require('../index.js');
+
+module.exports = async (req, res) => {
+  const body = req?.body && typeof req.body === 'object' ? req.body : {};
+  const message = body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  const contact = body?.entry?.[0]?.changes?.[0]?.value?.contacts?.find(c => c?.wa_id === message?.from) || body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
+  const ctx = {
+    phone: message?.from || '',
+    msgId: message?.id || '',
+    customerName: (contact?.profile?.name || '').trim(),
+    userText: typeof message?.text?.body === 'string' ? message.text.body : '',
+    aiReply: '',
+    remembered: false
+  };
+  return memoryContext.run(ctx, () => originalHandler(req, res));
+};
