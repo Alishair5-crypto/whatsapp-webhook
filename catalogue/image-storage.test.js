@@ -111,3 +111,10 @@ test('readBody enforces the upload size limit', async () => {
   const req = fakeReq([Buffer.alloc(storage.MAX_IMAGE_BYTES + 1)]);
   await assert.rejects(() => handler.readBody(req), /Image exceeds 4 MB limit/);
 });
+
+test('readBody accepts Vercel-style pre-buffered binary bodies', async () => {
+  const expected = pngBytes(Buffer.from('vercel-body'));
+  const req = { body: expected };
+  const result = await handler.readBody(req);
+  assert.deepEqual(result, expected);
+});
