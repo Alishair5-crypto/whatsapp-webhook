@@ -3,47 +3,19 @@
 // layer. Original AI reasoning/history is untouched; memory is an additive wrapper.
 const { AsyncLocalStorage } = require('async_hooks');
 const { getMemoryContext, remember } = require('../zara-memory');
+const { getCatalogueForMessage, primaryImage } = require('../catalogue/agent');
 const originalFetch = globalThis.fetch;
 const memoryContext = new AsyncLocalStorage();
 
 const URDU_NORMALIZATION = [
-  // Fabric / product vocabulary
-  ['مارینا', 'مرینہ'],
-  ['مارینا فیبرک', 'مرینہ فیبرک'],
-  ['ویلٹ', 'ویلویٹ'],
-  ['ویلویٹ', 'ویلویٹ'],
-  ['فابریکس', 'فیبرکس'],
-  ['فابریک', 'فیبرک'],
-  ['فیبرکس', 'فیبرکس'],
-  ['سوٹس', 'سوٹس'],
-  ['سوٹ', 'سوٹ'],
-  ['رچ', 'شاندار'],
-  ['پریمیم', 'اعلیٰ معیار کا'],
-  ['کوالٹی', 'معیار'],
-  ['کلر', 'رنگ'],
-  ['کلرز', 'رنگ'],
-  ['ڈیزائن', 'ڈیزائن'],
-  ['پرنٹڈ', 'پرنٹ شدہ'],
-  ['ایمبروئیڈری', 'کڑھائی'],
-  ['ایمبروئیڈرڈ', 'کڑھائی والا'],
-  ['کلیکشن', 'کلیکشن'],
-  ['آرڈر', 'آرڈر'],
-  ['ایویلیبل', 'دستیاب'],
-  ['ایویلیبل ہیں', 'دستیاب ہیں'],
-  // Common Urdu speech spellings
-  ['براہ کرم', 'براہِ کرم'],
-  ['مہربانی کر کے', 'مہربانی کرکے'],
-  ['آپکو', 'آپ کو'],
-  ['آپکے', 'آپ کے'],
-  ['آپکی', 'آپ کی'],
-  ['اسکے', 'اس کے'],
-  ['اسکی', 'اس کی'],
-  ['انکے', 'ان کے'],
-  ['انکی', 'ان کی'],
-  ['کہتےہیں', 'کہتے ہیں'],
-  ['چاہتےہیں', 'چاہتے ہیں'],
-  ['ہیں—', 'ہیں — '],
-  ['ہے—', 'ہے — ']
+  ['مارینا', 'مرینہ'], ['مارینا فیبرک', 'مرینہ فیبرک'], ['ویلٹ', 'ویلویٹ'], ['ویلویٹ', 'ویلویٹ'],
+  ['فابریکس', 'فیبرکس'], ['فابریک', 'فیبرک'], ['فیبرکس', 'فیبرکس'], ['سوٹس', 'سوٹس'], ['سوٹ', 'سوٹ'],
+  ['رچ', 'شاندار'], ['پریمیم', 'اعلیٰ معیار کا'], ['کوالٹی', 'معیار'], ['کلر', 'رنگ'], ['کلرز', 'رنگ'],
+  ['ڈیزائن', 'ڈیزائن'], ['پرنٹڈ', 'پرنٹ شدہ'], ['ایمبروئیڈری', 'کڑھائی'], ['ایمبروئیڈرڈ', 'کڑھائی والا'],
+  ['کلیکشن', 'کلیکشن'], ['آرڈر', 'آرڈر'], ['ایویلیبل', 'دستیاب'], ['ایویلیبل ہیں', 'دستیاب ہیں'],
+  ['براہ کرم', 'براہِ کرم'], ['مہربانی کر کے', 'مہربانی کرکے'], ['آپکو', 'آپ کو'], ['آپکے', 'آپ کے'],
+  ['آپکی', 'آپ کی'], ['اسکے', 'اس کے'], ['اسکی', 'اس کی'], ['انکے', 'ان کے'], ['انکی', 'ان کی'],
+  ['کہتےہیں', 'کہتے ہیں'], ['چاہتےہیں', 'چاہتے ہیں'], ['ہیں—', 'ہیں — '], ['ہے—', 'ہے — ']
 ];
 
 function normalizeUrdu(text) {
@@ -63,17 +35,9 @@ function normalizeUrduText(text) {
   return out;
 }
 
-function isElevenLabsTTS(url) {
-  return url && url.includes('api.elevenlabs.io/v1/text-to-speech/');
-}
-
-function isWhatsAppSend(url) {
-  return url && /graph\.facebook\.com\/v\d+\.\d+\//.test(url) && /\/messages(?:\?|$)/.test(url);
-}
-
-function isChatCompletion(url) {
-  return url && /\/chat\/completions(?:\?|$)/.test(url);
-}
+function isElevenLabsTTS(url) { return url && url.includes('api.elevenlabs.io/v1/text-to-speech/'); }
+function isWhatsAppSend(url) { return url && /graph\.facebook\.com\/v\d+\.\d+\//.test(url) && /\/messages(?:\?|$)/.test(url); }
+function isChatCompletion(url) { return url && /\/chat\/completions(?:\?|$)/.test(url); }
 
 async function injectMemoryIntoAI(url, init, ctx) {
   if (!ctx || !init || typeof init.body !== 'string') return init;
@@ -94,18 +58,24 @@ async function injectMemoryIntoAI(url, init, ctx) {
   }
   if (query) ctx.userText = query.replace(/^Customer name:\s*[^\n]+\n/i, '').trim();
 
+  if (!ctx.catalogueChecked && ctx.userText) {
+    ctx.catalogueChecked = true;
+    ctx.catalogue = await getCatalogueForMessage(process.env.DATABASE_URL || '', ctx.userText);
+  }
+
   const memory = await getMemoryContext(process.env.DATABASE_URL || '', ctx.phone, ctx.userText);
-  if (!memory) return init;
+  const catalogueContext = ctx.catalogue?.context || '';
+  if (!memory && !catalogueContext) return init;
 
   if (Array.isArray(payload.contents)) {
     const system = payload.system_instruction?.parts?.[0]?.text;
-    if (typeof system === 'string') payload.system_instruction.parts[0].text = system + memory;
+    if (typeof system === 'string') payload.system_instruction.parts[0].text = system + (memory || '') + catalogueContext;
   }
 
   if (Array.isArray(payload.messages)) {
     const systemIndex = payload.messages.findIndex(m => m?.role === 'system');
     if (systemIndex >= 0 && typeof payload.messages[systemIndex].content === 'string') {
-      payload.messages[systemIndex].content += memory;
+      payload.messages[systemIndex].content += (memory || '') + catalogueContext;
     }
   }
 
@@ -113,17 +83,40 @@ async function injectMemoryIntoAI(url, init, ctx) {
 }
 
 async function maybeRemember(ctx) {
-  if (!ctx || ctx.remembered || !ctx.phone || !ctx.msgId || !ctx.userText) return;
-  if (!ctx.aiReply) return;
+  if (!ctx || ctx.remembered || !ctx.phone || !ctx.msgId || !ctx.userText || !ctx.aiReply) return;
   ctx.remembered = true;
-  await remember(
-    process.env.DATABASE_URL || '',
-    ctx.phone,
-    ctx.msgId,
-    ctx.userText,
-    ctx.aiReply,
-    ctx.customerName
-  );
+  await remember(process.env.DATABASE_URL || '', ctx.phone, ctx.msgId, ctx.userText, ctx.aiReply, ctx.customerName);
+}
+
+async function sendCatalogueImages(ctx, headers) {
+  if (!ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
+  if (!ctx.phone || !process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) return;
+
+  const urls = new Set();
+  const selected = [];
+  for (const product of ctx.catalogue.products) {
+    const url = primaryImage(product);
+    if (!url || urls.has(url)) continue;
+    urls.add(url);
+    selected.push({ product, url });
+    if (selected.length >= 3) break;
+  }
+  if (!selected.length) return;
+
+  ctx.catalogueImagesSent = true;
+  for (const item of selected) {
+    try {
+      const price = Number(item.product?.price);
+      const priceText = Number.isFinite(price) ? `${item.product?.currency || 'PKR'} ${price.toLocaleString('en-PK')}` : '';
+      const caption = `${item.product?.name || 'Product'}${priceText ? ` — ${priceText}` : ''}`.slice(0, 1024);
+      const response = await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: ctx.phone, type: 'image', image: { link: item.url, caption } })
+      });
+      if (response.ok) console.log('[CATALOGUE IMAGE] Sent:', item.product?.name || item.url);
+      else console.error('[CATALOGUE IMAGE] Send failed:', (await response.text()).slice(0, 300));
+    } catch (error) { console.error('[CATALOGUE IMAGE] Error:', error.message); }
+  }
 }
 
 if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
@@ -133,12 +126,10 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
     const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined));
     const ctx = memoryContext.getStore();
 
-    // Inject verified customer memory only into outbound LLM requests.
     if (ctx && (isChatCompletion(url) || (url && url.includes('generativelanguage.googleapis.com')))) {
       init = await injectMemoryIntoAI(url, init, ctx);
     }
 
-    // ElevenLabs: use the Urdu-capable v3 model and pronunciation-normalized text.
     if (isElevenLabsTTS(url)) {
       headers.set('Accept', 'audio/mpeg');
       let body = init.body;
@@ -160,21 +151,12 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
         try {
           const errorBody = await response.clone().text();
           const requestId = response.headers.get('request-id') || response.headers.get('x-request-id') || null;
-          console.error('[ELEVENLABS HTTP ERROR]', JSON.stringify({
-            status: response.status,
-            contentType: response.headers.get('content-type') || null,
-            requestId,
-            body: errorBody.slice(0, 2000)
-          }));
-        } catch (e) {
-          console.error('[ELEVENLABS HTTP ERROR] Failed to read error body:', e.message);
-        }
+          console.error('[ELEVENLABS HTTP ERROR]', JSON.stringify({ status: response.status, contentType: response.headers.get('content-type') || null, requestId, body: errorBody.slice(0, 2000) }));
+        } catch (e) { console.error('[ELEVENLABS HTTP ERROR] Failed to read error body:', e.message); }
       }
       return response;
     }
 
-    // WhatsApp text/voice sends: preserve the active outbound behavior and capture
-    // only customer-visible successful replies for durable memory extraction.
     if (isWhatsAppSend(url) && typeof init.body === 'string') {
       try {
         const payload = JSON.parse(init.body);
@@ -182,12 +164,18 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
           payload.text.body = normalizeUrduText(payload.text.body);
           if (ctx) ctx.aiReply = payload.text.body;
           const response = await originalFetch(input, { ...init, headers, body: JSON.stringify(payload) });
-          if (response.ok) await maybeRemember(ctx);
+          if (response.ok) {
+            await maybeRemember(ctx);
+            await sendCatalogueImages(ctx, headers);
+          }
           return response;
         }
         if (payload?.type === 'audio' && ctx?.aiReply) {
           const response = await originalFetch(input, { ...init, headers });
-          if (response.ok) await maybeRemember(ctx);
+          if (response.ok) {
+            await maybeRemember(ctx);
+            await sendCatalogueImages(ctx, headers);
+          }
           return response;
         }
       } catch (_) {}
@@ -209,7 +197,10 @@ module.exports = async (req, res) => {
     customerName: (contact?.profile?.name || '').trim(),
     userText: typeof message?.text?.body === 'string' ? message.text.body : '',
     aiReply: '',
-    remembered: false
+    remembered: false,
+    catalogueChecked: false,
+    catalogue: null,
+    catalogueImagesSent: false
   };
   return memoryContext.run(ctx, () => originalHandler(req, res));
 };

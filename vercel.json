@@ -4,9 +4,17 @@
     {
       "src": "api/index.js",
       "use": "@vercel/node"
+    },
+    {
+      "src": "api/catalogue-images.js",
+      "use": "@vercel/node"
     }
   ],
   "routes": [
+    {
+      "src": "/api/catalogue-images",
+      "dest": "api/catalogue-images.js"
+    },
     {
       "src": "/(.*)",
       "dest": "api/index.js"
