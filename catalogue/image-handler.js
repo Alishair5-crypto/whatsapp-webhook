@@ -56,6 +56,19 @@ function publicError(error) {
 }
 
 function readBody(req, maxBytes = MAX_IMAGE_BYTES) {
+  // Vercel Node functions can expose application/octet-stream/raw bodies as
+  // request.body. Prefer that already-buffered value when present; otherwise
+  // fall back to the IncomingMessage stream used by local/tests.
+  if (Buffer.isBuffer(req.body)) {
+    if (req.body.length > maxBytes) return Promise.reject(new Error('Image exceeds 4 MB limit'));
+    return Promise.resolve(req.body);
+  }
+  if (req.body instanceof Uint8Array) {
+    const buffer = Buffer.from(req.body);
+    if (buffer.length > maxBytes) return Promise.reject(new Error('Image exceeds 4 MB limit'));
+    return Promise.resolve(buffer);
+  }
+
   return new Promise((resolve, reject) => {
     const chunks = [];
     let total = 0;
