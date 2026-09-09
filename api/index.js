@@ -58,8 +58,6 @@ async function injectMemoryIntoAI(url, init, ctx) {
   }
   if (query) ctx.userText = query.replace(/^Customer name:\s*[^\n]+\n/i, '').trim();
 
-  // Catalogue is an additive layer. It runs only for product discovery/browse
-  // requests and never alters the existing voice transcription or TTS pipeline.
   if (!ctx.catalogueChecked && ctx.userText) {
     ctx.catalogueChecked = true;
     ctx.catalogue = await getCatalogueForMessage(process.env.DATABASE_URL || '', ctx.userText);
@@ -71,7 +69,7 @@ async function injectMemoryIntoAI(url, init, ctx) {
 
   if (Array.isArray(payload.contents)) {
     const system = payload.system_instruction?.parts?.[0]?.text;
-    if (typeof system === 'string') payload.system_instruction.parts[0].text = system + memory + catalogueContext;
+    if (typeof system === 'string') payload.system_instruction.parts[0].text = system + (memory || '') + catalogueContext;
   }
 
   if (Array.isArray(payload.messages)) {
@@ -94,10 +92,9 @@ async function sendCatalogueImages(ctx, headers) {
   if (!ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
   if (!ctx.phone || !process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) return;
 
-  const products = ctx.catalogue.products;
   const urls = new Set();
   const selected = [];
-  for (const product of products) {
+  for (const product of ctx.catalogue.products) {
     const url = primaryImage(product);
     if (!url || urls.has(url)) continue;
     urls.add(url);
@@ -113,21 +110,12 @@ async function sendCatalogueImages(ctx, headers) {
       const priceText = Number.isFinite(price) ? `${item.product?.currency || 'PKR'} ${price.toLocaleString('en-PK')}` : '';
       const caption = `${item.product?.name || 'Product'}${priceText ? ` — ${priceText}` : ''}`.slice(0, 1024);
       const response = await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          messaging_product: 'whatsapp',
-          recipient_type: 'individual',
-          to: ctx.phone,
-          type: 'image',
-          image: { link: item.url, caption }
-        })
+        method: 'POST', headers,
+        body: JSON.stringify({ messaging_product: 'whatsapp', recipient_type: 'individual', to: ctx.phone, type: 'image', image: { link: item.url, caption } })
       });
       if (response.ok) console.log('[CATALOGUE IMAGE] Sent:', item.product?.name || item.url);
       else console.error('[CATALOGUE IMAGE] Send failed:', (await response.text()).slice(0, 300));
-    } catch (error) {
-      console.error('[CATALOGUE IMAGE] Error:', error.message);
-    }
+    } catch (error) { console.error('[CATALOGUE IMAGE] Error:', error.message); }
   }
 }
 
@@ -184,7 +172,10 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
         }
         if (payload?.type === 'audio' && ctx?.aiReply) {
           const response = await originalFetch(input, { ...init, headers });
-          if (response.ok) await maybeRemember(ctx);
+          if (response.ok) {
+            await maybeRemember(ctx);
+            await sendCatalogueImages(ctx, headers);
+          }
           return response;
         }
       } catch (_) {}
