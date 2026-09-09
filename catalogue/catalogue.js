@@ -1,16 +1,18 @@
 'use strict';
 
 // Zara Catalogue v1: isolated runtime catalogue access.
-// This module does not import or modify index.js.
+// This module does not import or modify index.js or api/index.js.
+
+let sqlClient = null;
 
 function getSql(dbUrl) {
   if (!dbUrl || !dbUrl.startsWith('postgres')) return null;
   try {
-    if (!global.__zaraCatalogueSql) {
+    if (!sqlClient) {
       const { neon } = require('@neondatabase/serverless');
-      global.__zaraCatalogueSql = require('@neondatabase/serverless').neon(dbUrl);
+      sqlClient = neon(dbUrl);
     }
-    return global.__zaraCatalogueSql;
+    return sqlClient;
   } catch (e) {
     console.error('[CATALOGUE INIT]', e.message);
     return null;
@@ -19,7 +21,11 @@ function getSql(dbUrl) {
 
 function clean(value, max = 120) {
   if (typeof value !== 'string') return '';
-  return value.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+  return value
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
 }
 
 function positiveInt(value, fallback, max) {
@@ -28,15 +34,21 @@ function positiveInt(value, fallback, max) {
   return Math.min(n, max);
 }
 
+function normalizeFilters(filters = {}) {
+  return {
+    fabric: clean(filters.fabric),
+    color: clean(filters.color),
+    collection: clean(filters.collection),
+    name: clean(filters.name),
+    limit: positiveInt(filters.limit, 5, 20)
+  };
+}
+
 async function searchCatalogue(dbUrl, filters = {}) {
   const sql = getSql(dbUrl);
   if (!sql) throw new Error('Catalogue database is not configured');
 
-  const fabric = clean(filters.fabric);
-  const color = clean(filters.color);
-  const collection = clean(filters.collection);
-  const name = clean(filters.name);
-  const limit = positiveInt(filters.limit, 5, 20);
+  const { fabric, color, collection, name, limit } = normalizeFilters(filters);
 
   const rows = await sql`
     SELECT
@@ -77,4 +89,7 @@ async function searchCatalogue(dbUrl, filters = {}) {
   return rows || [];
 }
 
-module.exports = { searchCatalogue };
+module.exports = {
+  searchCatalogue,
+  normalizeFilters
+};
