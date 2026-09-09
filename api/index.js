@@ -39,6 +39,11 @@ function isElevenLabsTTS(url) { return url && url.includes('api.elevenlabs.io/v1
 function isWhatsAppSend(url) { return url && /graph\.facebook\.com\/v\d+\.\d+\//.test(url) && /\/messages(?:\?|$)/.test(url); }
 function isChatCompletion(url) { return url && /\/chat\/completions(?:\?|$)/.test(url); }
 
+function appendCatalogueInstruction(system, catalogueContext) {
+  if (!catalogueContext) return system;
+  return `${system || ''}\n\n=== CATALOGUE SAFETY OVERRIDE ===\nWhen LIVE CATALOGUE RESULT is present, it has priority over all static product examples or general product knowledge in the base prompt. Product facts must come exclusively from the live catalogue result. Never invent or substitute products.\n${catalogueContext}`;
+}
+
 async function injectMemoryIntoAI(url, init, ctx) {
   if (!ctx || !init || typeof init.body !== 'string') return init;
   let payload;
@@ -65,17 +70,24 @@ async function injectMemoryIntoAI(url, init, ctx) {
 
   const memory = await getMemoryContext(process.env.DATABASE_URL || '', ctx.phone, ctx.userText);
   const catalogueContext = ctx.catalogue?.context || '';
+  if (ctx.catalogue) console.log('[CATALOGUE CONTEXT] attached=', Boolean(catalogueContext), 'products=', ctx.catalogue.products?.length || 0);
   if (!memory && !catalogueContext) return init;
 
   if (Array.isArray(payload.contents)) {
-    const system = payload.system_instruction?.parts?.[0]?.text;
-    if (typeof system === 'string') payload.system_instruction.parts[0].text = system + (memory || '') + catalogueContext;
+    if (!payload.system_instruction || !Array.isArray(payload.system_instruction.parts)) {
+      payload.system_instruction = { parts: [{ text: '' }] };
+    }
+    if (!payload.system_instruction.parts[0]) payload.system_instruction.parts[0] = { text: '' };
+    const system = typeof payload.system_instruction.parts[0].text === 'string' ? payload.system_instruction.parts[0].text : '';
+    payload.system_instruction.parts[0].text = system + (memory || '') + (catalogueContext ? appendCatalogueInstruction('', catalogueContext) : '');
   }
 
   if (Array.isArray(payload.messages)) {
     const systemIndex = payload.messages.findIndex(m => m?.role === 'system');
     if (systemIndex >= 0 && typeof payload.messages[systemIndex].content === 'string') {
-      payload.messages[systemIndex].content += (memory || '') + catalogueContext;
+      payload.messages[systemIndex].content += (memory || '') + (catalogueContext ? appendCatalogueInstruction('', catalogueContext) : '');
+    } else if (catalogueContext) {
+      payload.messages.unshift({ role: 'system', content: appendCatalogueInstruction('', catalogueContext) });
     }
   }
 
