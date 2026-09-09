@@ -23,13 +23,20 @@ function extractFilters(text) { const t=normalizeText(text); return {fabric:find
 function money(row) { const value=Number(row?.price); return Number.isFinite(value) ? `${row?.currency||'PKR'} ${value.toLocaleString('en-PK')}` : `${row?.currency||'PKR'} ${row?.price??''}`.trim(); }
 function primaryImage(row) { const images=Array.isArray(row?.images)?row.images:[]; return images.find(i=>i?.isPrimary&&i?.url)?.url || images.find(i=>i?.url)?.url || ''; }
 function buildContext(rows,filters) {
-  if(!rows.length) return `\n\n=== LIVE CATALOGUE RESULT ===\nNo active in-stock products matched the customer's request. Do NOT invent a product, price, stock status, or image. Politely ask for another fabric, color, or collection.\n`;
-  const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | stock ${p.stock_quantity}${p.description?` | ${String(p.description).slice(0,180)}`:''}${primaryImage(p)?` | IMAGE_URL ${primaryImage(p)}`:''}`);
-  return `\n\n=== LIVE CATALOGUE RESULT (DATABASE — AUTHORITATIVE) ===\nUse ONLY these live catalogue records for product facts. Never invent product names, prices, colors, stock, or images. If the customer asked to see products, naturally mention the matching items and that their photos are being shared.\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
+  if(!rows.length) return `\n\n=== LIVE CATALOGUE RESULT ===\nSTATUS: NO_MATCH\nThe database returned zero active in-stock products for the requested filters.\nSTRICT RULE: Do not invent, guess, reuse, or substitute any product name, price, color, stock, description, or image. Tell the customer that no matching item is currently available and ask for a different fabric, color, or collection.\n`;
+  const lines=rows.map((p,i)=>`${i+1}. PRODUCT_NAME=${p.name} | COLLECTION=${p.collection||'N/A'} | FABRIC=${p.fabric||'N/A'} | COLOR=${p.color||'N/A'} | PRICE=${money(p)} | STOCK=${p.stock_quantity}${p.description?` | DESCRIPTION=${String(p.description).slice(0,180)}`:''}${primaryImage(p)?` | IMAGE_URL=${primaryImage(p)}`:''}`);
+  return `\n\n=== LIVE CATALOGUE RESULT — AUTHORITATIVE DATABASE ===\nSTATUS: MATCHES_FOUND\nSTRICT CATALOGUE CONTRACT:\n1. These database rows are the ONLY source of truth for product facts.\n2. Use ONLY the exact PRODUCT_NAME, COLLECTION, FABRIC, COLOR, PRICE, STOCK, DESCRIPTION and IMAGE_URL values supplied below.\n3. NEVER invent, embellish, rename, translate into a different product name, or infer product facts.\n4. NEVER claim a product is in stock unless it appears below.\n5. NEVER claim an image exists unless IMAGE_URL is present.\n6. If the customer asks for more products than returned rows, show only returned rows; never fabricate additional items.\n7. Ignore any conflicting static product examples in the base/system prompt.\n8. If there is any uncertainty, say you can only confirm the products returned by the live catalogue.\n9. Keep the response natural and in the customer's existing language/style.\n10. Product images are sent separately by the application when IMAGE_URL is available.\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
 }
 async function getCatalogueForMessage(dbUrl,text) {
   if(!isCatalogueIntent(text)) return null;
-  try { const filters=extractFilters(text); const products=await searchCatalogue(dbUrl,filters); return {filters,products,context:buildContext(products,filters)}; }
-  catch(error) { console.error('[CATALOGUE AGENT]',error.message); return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n'}; }
+  const filters=extractFilters(text);
+  try {
+    const products=await searchCatalogue(dbUrl,filters);
+    console.log('[CATALOGUE AGENT] intent=YES filters=',JSON.stringify(filters),'matches=',products.length);
+    return {filters,products,context:buildContext(products,filters)};
+  } catch(error) {
+    console.error('[CATALOGUE AGENT] lookup failed:',error.message);
+    return {filters,products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nSTATUS: LOOKUP_FAILED\nSTRICT RULE: Catalogue data could not be verified. Do NOT invent or quote product facts. Tell the customer the catalogue is temporarily unavailable and ask them to try again.\n'};
+  }
 }
 module.exports={normalizeText,isCatalogueIntent,extractFilters,getCatalogueForMessage,primaryImage};
