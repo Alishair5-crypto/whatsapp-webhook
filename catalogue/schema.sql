@@ -45,30 +45,17 @@ CREATE TABLE IF NOT EXISTS catalog_events (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_catalog_products_status
-  ON catalog_products(status);
+CREATE INDEX IF NOT EXISTS idx_catalog_products_status ON catalog_products(status);
+CREATE INDEX IF NOT EXISTS idx_catalog_products_fabric_color ON catalog_products(fabric, color);
+CREATE INDEX IF NOT EXISTS idx_catalog_products_collection ON catalog_products(collection);
+CREATE INDEX IF NOT EXISTS idx_catalog_inventory_stock ON catalog_inventory(stock_quantity);
+CREATE INDEX IF NOT EXISTS idx_catalog_images_product_order ON catalog_images(product_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_catalog_events_product_time ON catalog_events(product_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_catalog_products_fabric_color
-  ON catalog_products(fabric, color);
-
-CREATE INDEX IF NOT EXISTS idx_catalog_products_collection
-  ON catalog_products(collection);
-
-CREATE INDEX IF NOT EXISTS idx_catalog_inventory_stock
-  ON catalog_inventory(stock_quantity);
-
-CREATE INDEX IF NOT EXISTS idx_catalog_images_product_order
-  ON catalog_images(product_id, sort_order, id);
-
-CREATE INDEX IF NOT EXISTS idx_catalog_events_product_time
-  ON catalog_events(product_id, created_at DESC);
-
--- Only one primary image per product.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_catalog_one_primary_image
   ON catalog_images(product_id)
   WHERE is_primary = TRUE;
 
--- Keep updated_at maintainable without application-side race-prone timestamp logic.
 CREATE OR REPLACE FUNCTION catalog_set_updated_at()
 RETURNS TRIGGER
 LANGUAGE plpgsql
@@ -90,5 +77,66 @@ CREATE TRIGGER trg_catalog_inventory_updated_at
 BEFORE UPDATE ON catalog_inventory
 FOR EACH ROW
 EXECUTE FUNCTION catalog_set_updated_at();
+
+-- Availability invariant:
+-- archived is a lifecycle state and is never changed automatically.
+-- For non-archived products, stock > 0 means active and stock = 0 means out_of_stock.
+CREATE OR REPLACE FUNCTION catalog_normalize_product_status()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  current_stock INTEGER;
+BEGIN
+  IF NEW.status = 'archived' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT stock_quantity INTO current_stock
+  FROM catalog_inventory
+  WHERE product_id = NEW.id;
+
+  IF current_stock IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  NEW.status := CASE WHEN current_stock > 0 THEN 'active' ELSE 'out_of_stock' END;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_catalog_products_status_invariant ON catalog_products;
+CREATE TRIGGER trg_catalog_products_status_invariant
+BEFORE UPDATE OF status ON catalog_products
+FOR EACH ROW
+WHEN (OLD.status IS DISTINCT FROM NEW.status)
+EXECUTE FUNCTION catalog_normalize_product_status();
+
+CREATE OR REPLACE FUNCTION catalog_sync_product_status_from_stock()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND OLD.stock_quantity IS NOT DISTINCT FROM NEW.stock_quantity THEN
+    RETURN NEW;
+  END IF;
+
+  UPDATE catalog_products
+  SET status = CASE
+    WHEN status = 'archived' THEN 'archived'
+    WHEN NEW.stock_quantity > 0 THEN 'active'
+    ELSE 'out_of_stock'
+  END
+  WHERE id = NEW.product_id;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_catalog_inventory_status_invariant ON catalog_inventory;
+CREATE TRIGGER trg_catalog_inventory_status_invariant
+AFTER INSERT OR UPDATE OF stock_quantity ON catalog_inventory
+FOR EACH ROW
+EXECUTE FUNCTION catalog_sync_product_status_from_stock();
 
 COMMIT;
