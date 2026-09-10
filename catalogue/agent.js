@@ -19,6 +19,12 @@ function isCatalogueIntent(text) {
   if(product && !order && /\?|\b(price|rate|kitna|kitni|hai|hain|chahiye|available|konsa|kaunsa|which|what)\b/.test(t)) return true;
   return false;
 }
+function wantsCatalogueImages(text) {
+  const t=normalizeText(text); if(!t) return false;
+  const browse=hasAny(t,BROWSE_WORDS);
+  const imageWords=['pics','pic','picture','pictures','photo','photos','image','images','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','کچھ دکھ','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں','تصویر','تصاویر','فوٹو','پکس'];
+  return browse && hasAny(t,imageWords) && !hasAny(t,ORDER_WORDS);
+}
 function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:5}; }
 function money(row) { const value=Number(row?.price); return Number.isFinite(value) ? `${row?.currency||'PKR'} ${value.toLocaleString('en-PK')}` : `${row?.currency||'PKR'} ${row?.price??''}`.trim(); }
 function primaryImage(row) { const images=Array.isArray(row?.images)?row.images:[]; return images.find(i=>i?.isPrimary&&i?.url)?.url || images.find(i=>i?.url)?.url || ''; }
@@ -29,7 +35,7 @@ function buildContext(rows,filters) {
 }
 async function getCatalogueForMessage(dbUrl,text) {
   if(!isCatalogueIntent(text)) return null;
-  try { const filters=extractFilters(text); const products=await searchCatalogue(dbUrl,filters); return {filters,products,context:buildContext(products,filters)}; }
-  catch(error) { console.error('[CATALOGUE AGENT]',error.message); return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n'}; }
+  try { const filters=extractFilters(text); const products=await searchCatalogue(dbUrl,filters); return {filters,products,context:buildContext(products,filters),wantsImages:wantsCatalogueImages(text)}; }
+  catch(error) { console.error('[CATALOGUE AGENT]',error.message); return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n',wantsImages:false}; }
 }
-module.exports={normalizeText,isCatalogueIntent,extractFilters,getCatalogueForMessage,primaryImage};
+module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,extractFilters,getCatalogueForMessage,primaryImage};
