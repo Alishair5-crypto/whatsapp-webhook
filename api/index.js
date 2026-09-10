@@ -89,14 +89,14 @@ async function maybeRemember(ctx) {
 }
 
 async function sendCatalogueImages(ctx, headers) {
-  if (!ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
+  if (!ctx?.catalogue?.wantsImages || !ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
   if (!ctx.phone || !process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) return;
 
   const urls = new Set();
   const selected = [];
   for (const product of ctx.catalogue.products) {
     const url = primaryImage(product);
-    if (!url || urls.has(url)) continue;
+    if (!url || urls.has(url) || !/^https:\/\//i.test(url)) continue;
     urls.add(url);
     selected.push({ product, url });
     if (selected.length >= 3) break;
@@ -145,7 +145,6 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
           body = JSON.stringify(payload);
         } catch (_) {}
       }
-
       const response = await originalFetch(input, { ...init, headers, body });
       if (!response.ok) {
         try {
@@ -180,7 +179,6 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
         }
       } catch (_) {}
     }
-
     return originalFetch(input, init);
   };
 }
