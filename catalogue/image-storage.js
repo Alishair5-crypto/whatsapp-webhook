@@ -68,7 +68,6 @@ function detectImageType(buffer) {
 function validateImageInput({ productId, buffer, contentType, altText = '', sortOrder = 0 }) {
   const normalizedProductId = positiveInt(productId);
   if (!normalizedProductId) throw new Error('Invalid product id');
-
   if (!Buffer.isBuffer(buffer)) throw new Error('Image body is required');
   if (buffer.length < 1) throw new Error('Image body is empty');
   if (buffer.length > MAX_IMAGE_BYTES) throw new Error('Image exceeds 4 MB limit');
@@ -96,27 +95,14 @@ function makeBlobPath(productId, extension) {
   return `catalogue/products/${productId}/${crypto.randomUUID()}.${extension}`;
 }
 
-async function uploadProductImage({
-  dbUrl,
-  productId,
-  buffer,
-  contentType,
-  altText,
-  sortOrder = 0,
-  isPrimary = false
-}) {
+async function uploadProductImage({ dbUrl, productId, buffer, contentType, altText, sortOrder = 0, isPrimary = false }) {
   const input = validateImageInput({ productId, buffer, contentType, altText, sortOrder });
   const sql = getSql(dbUrl);
   const blob = getBlob();
   if (!sql) throw new Error('Catalogue database is not configured');
   if (!blob) throw new Error('Vercel Blob is not configured');
 
-  const product = await sql`
-    SELECT id
-    FROM catalog_products
-    WHERE id = ${input.productId}
-    LIMIT 1
-  `;
+  const product = await sql`SELECT id FROM catalog_products WHERE id = ${input.productId} LIMIT 1`;
   if (!product.length) throw new Error('Product not found');
 
   const pathname = makeBlobPath(input.productId, input.extension);
@@ -131,31 +117,19 @@ async function uploadProductImage({
 
     const primary = Boolean(isPrimary);
     const [, insertedRows] = await sql.transaction([
-      sql`
-        UPDATE catalog_images
-        SET is_primary = FALSE
-        WHERE product_id = ${input.productId}
-          AND ${primary} = TRUE
-      `,
-      sql`
-        INSERT INTO catalog_images
-          (product_id, image_url, alt_text, sort_order, is_primary)
-        VALUES
-          (${input.productId}, ${uploaded.url}, ${input.altText || null}, ${input.sortOrder}, ${primary})
-        RETURNING id, product_id, image_url, alt_text, sort_order, is_primary, created_at
-      `
+      sql`UPDATE catalog_images SET is_primary = FALSE WHERE product_id = ${input.productId} AND ${primary} = TRUE`,
+      sql`INSERT INTO catalog_images (product_id, image_url, alt_text, sort_order, is_primary)
+          VALUES (${input.productId}, ${uploaded.url}, ${input.altText || null}, ${input.sortOrder}, ${primary})
+          RETURNING id, product_id, image_url, alt_text, sort_order, is_primary, created_at`
     ]);
 
     const [row] = insertedRows;
     if (!row) throw new Error('Image metadata insert failed');
     return row;
   } catch (error) {
-    if (uploaded && uploaded.url) {
-      try {
-        await blob.del(uploaded.url);
-      } catch (cleanupError) {
-        console.error('[CATALOGUE BLOB CLEANUP]', cleanupError.message);
-      }
+    if (uploaded?.url) {
+      try { await blob.del(uploaded.url); }
+      catch (cleanupError) { console.error('[CATALOGUE BLOB CLEANUP]', cleanupError.message); }
     }
     throw error;
   }
@@ -166,11 +140,9 @@ async function listProductImages(dbUrl, productId) {
   if (!id) throw new Error('Invalid product id');
   const sql = getSql(dbUrl);
   if (!sql) throw new Error('Catalogue database is not configured');
-
   return sql`
     SELECT id, product_id, image_url, alt_text, sort_order, is_primary, created_at
-    FROM catalog_images
-    WHERE product_id = ${id}
+    FROM catalog_images WHERE product_id = ${id}
     ORDER BY is_primary DESC, sort_order ASC, id ASC
   `;
 }
@@ -179,28 +151,22 @@ async function setPrimaryProductImage(dbUrl, productId, imageId) {
   const product = positiveInt(productId);
   const image = positiveInt(imageId);
   if (!product || !image) throw new Error('Invalid product or image id');
-
   const sql = getSql(dbUrl);
   if (!sql) throw new Error('Catalogue database is not configured');
 
-  const [, updatedRows] = await sql.transaction([
-    sql`
-      UPDATE catalog_images
-      SET is_primary = FALSE
-      WHERE product_id = ${product}
-    `,
-    sql`
-      UPDATE catalog_images
-      SET is_primary = TRUE
-      WHERE id = ${image}
-        AND product_id = ${product}
-      RETURNING id, product_id, image_url, alt_text, sort_order, is_primary, created_at
-    `
-  ]);
+  const rows = await sql`
+    WITH target AS (
+      SELECT id FROM catalog_images WHERE id = ${image} AND product_id = ${product}
+    )
+    UPDATE catalog_images AS ci
+    SET is_primary = (ci.id = target.id)
+    FROM target
+    WHERE ci.product_id = ${product}
+    RETURNING ci.id, ci.product_id, ci.image_url, ci.alt_text, ci.sort_order, ci.is_primary, ci.created_at
+  `;
 
-  const [row] = updatedRows;
-  if (!row) throw new Error('Image not found');
-  return row;
+  if (!rows.length) throw new Error('Image not found');
+  return rows.find(row => row.id === image) || rows[0];
 }
 
 async function deleteProductImage(dbUrl, productId, imageId) {
@@ -216,20 +182,23 @@ async function deleteProductImage(dbUrl, productId, imageId) {
   const rows = await sql`
     SELECT id, image_url
     FROM catalog_images
-    WHERE id = ${image}
-      AND product_id = ${product}
+    WHERE id = ${image} AND product_id = ${product}
     LIMIT 1
   `;
   if (!rows.length) throw new Error('Image not found');
 
-  // Keep the DB reference intact if Blob deletion fails; this avoids silently
-  // claiming an image was deleted while the object still exists.
-  await blob.del(rows[0].image_url);
+  // Delete the metadata first. If Blob cleanup fails, the product catalogue remains
+  // internally consistent and the orphan can be cleaned up separately.
   await sql`
     DELETE FROM catalog_images
-    WHERE id = ${image}
-      AND product_id = ${product}
+    WHERE id = ${image} AND product_id = ${product}
   `;
+
+  try {
+    await blob.del(rows[0].image_url);
+  } catch (error) {
+    console.error('[CATALOGUE BLOB ORPHAN]', JSON.stringify({ imageId: image, productId: product, url: rows[0].image_url, error: error.message }));
+  }
 
   return { id: image, productId: product };
 }
