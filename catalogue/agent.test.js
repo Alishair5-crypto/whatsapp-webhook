@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isCatalogueIntent, extractFilters, normalizeText, primaryImage } = require('./agent');
+const { isCatalogueIntent, wantsCatalogueImages, extractFilters, normalizeText, primaryImage } = require('./agent');
 
 test('catalogue intent detects Roman Urdu product browse request', () => {
   assert.equal(isCatalogueIntent('Zara lawn ke 3 piece dikhao'), true);
@@ -32,4 +32,20 @@ test('primary image prefers primary then first usable image', () => {
     { url: 'https://example.com/primary.jpg', isPrimary: true }
   ] };
   assert.equal(primaryImage(row), 'https://example.com/primary.jpg');
+});
+
+test('picture request enables image intent', () => {
+  assert.equal(wantsCatalogueImages('black lawn ke designs ki pictures dikhao'), true);
+});
+
+test('price-only catalogue request does not enable image sending', () => {
+  assert.equal(wantsCatalogueImages('black lawn ka price kya hai?'), false);
+});
+
+test('availability-only catalogue request does not enable image sending', () => {
+  assert.equal(wantsCatalogueImages('black lawn available hai?'), false);
+});
+
+test('order request does not enable image sending', () => {
+  assert.equal(wantsCatalogueImages('lawn ka order laga dein'), false);
 });
