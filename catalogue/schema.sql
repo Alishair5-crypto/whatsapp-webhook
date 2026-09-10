@@ -117,6 +117,10 @@ RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
 BEGIN
+  IF TG_OP = 'UPDATE' AND OLD.stock_quantity IS NOT DISTINCT FROM NEW.stock_quantity THEN
+    RETURN NEW;
+  END IF;
+
   UPDATE catalog_products
   SET status = CASE
     WHEN status = 'archived' THEN 'archived'
@@ -133,7 +137,6 @@ DROP TRIGGER IF EXISTS trg_catalog_inventory_status_invariant ON catalog_invento
 CREATE TRIGGER trg_catalog_inventory_status_invariant
 AFTER INSERT OR UPDATE OF stock_quantity ON catalog_inventory
 FOR EACH ROW
-WHEN (TG_OP = 'INSERT' OR OLD.stock_quantity IS DISTINCT FROM NEW.stock_quantity)
 EXECUTE FUNCTION catalog_sync_product_status_from_stock();
 
 COMMIT;
