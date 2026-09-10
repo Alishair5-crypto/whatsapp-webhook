@@ -8,8 +8,8 @@
     "test:catalogue": "node --test catalogue/*.test.js"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^1.1.0",
-    "@vercel/blob": "^2.8.0"
+    "@neondatabase/serverless": "1.1.0",
+    "@vercel/blob": "2.8.0"
   },
   "engines": {
     "node": ">=20"
