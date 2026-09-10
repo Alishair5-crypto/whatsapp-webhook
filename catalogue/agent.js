@@ -20,10 +20,11 @@ function isCatalogueIntent(text) {
   return false;
 }
 function wantsCatalogueImages(text) {
-  const t=normalizeText(text); if(!t) return false;
-  const browse=hasAny(t,BROWSE_WORDS);
-  const imageWords=['pics','pic','picture','pictures','photo','photos','image','images','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','کچھ دکھ','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں','تصویر','تصاویر','فوٹو','پکس'];
-  return browse && hasAny(t,imageWords) && !hasAny(t,ORDER_WORDS);
+  const t=normalizeText(text); if(!t || hasAny(t,ORDER_WORDS)) return false;
+  const product=hasAny(t,PRODUCT_WORDS);
+  const imageWords=['pics','pic','picture','pictures','photo','photos','image','images','تصویر','تصاویر','فوٹو','پکس'];
+  const visualVerbs=['show','shown','show me','display','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','کچھ دکھ','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں'];
+  return hasAny(t,imageWords) || (product && hasAny(t,visualVerbs));
 }
 function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:5}; }
 function money(row) { const value=Number(row?.price); return Number.isFinite(value) ? `${row?.currency||'PKR'} ${value.toLocaleString('en-PK')}` : `${row?.currency||'PKR'} ${row?.price??''}`.trim(); }
