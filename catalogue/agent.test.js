@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isCatalogueIntent, extractFilters, normalizeText, primaryImage } = require('./agent');
+const { isCatalogueIntent, isImageRequest, extractFilters, normalizeText, primaryImage } = require('./agent');
 
 test('catalogue intent detects Roman Urdu product browse request', () => {
   assert.equal(isCatalogueIntent('Zara lawn ke 3 piece dikhao'), true);
@@ -14,6 +14,18 @@ test('catalogue intent detects Urdu product browse request', () => {
 
 test('clear order request is not hijacked into catalogue browse', () => {
   assert.equal(isCatalogueIntent('lawn ka order laga dein'), false);
+});
+
+test('price and availability questions are catalogue-aware but do not trigger image sending', () => {
+  assert.equal(isCatalogueIntent('lawn ka price kya hai'), true);
+  assert.equal(isImageRequest('lawn ka price kya hai'), false);
+  assert.equal(isCatalogueIntent('lawn available hai?'), true);
+  assert.equal(isImageRequest('lawn available hai?'), false);
+});
+
+test('explicit visual request triggers image sending', () => {
+  assert.equal(isImageRequest('black lawn ke 3 piece dikhao'), true);
+  assert.equal(isImageRequest('black lawn ki pictures bhejo'), true);
 });
 
 test('filter extraction maps common fabric and color aliases', () => {
@@ -32,4 +44,9 @@ test('primary image prefers primary then first usable image', () => {
     { url: 'https://example.com/primary.jpg', isPrimary: true }
   ] };
   assert.equal(primaryImage(row), 'https://example.com/primary.jpg');
+});
+
+test('primary image is suppressed for non-visual catalogue questions', () => {
+  const row = { __sendImages: false, images: [{ url: 'https://example.com/primary.jpg', isPrimary: true }] };
+  assert.equal(primaryImage(row), '');
 });
