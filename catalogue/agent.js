@@ -28,7 +28,33 @@ function wantsCatalogueImages(text) {
 }
 function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:5}; }
 function money(row) { const value=Number(row?.price); return Number.isFinite(value) ? `${row?.currency||'PKR'} ${value.toLocaleString('en-PK')}` : `${row?.currency||'PKR'} ${row?.price??''}`.trim(); }
-function primaryImage(row) { const images=Array.isArray(row?.images)?row.images:[]; return images.find(i=>i?.isPrimary&&i?.url)?.url || images.find(i=>i?.url)?.url || ''; }
+
+function normalizeImageUrl(value) {
+  if (typeof value !== 'string') return '';
+  let raw = value.normalize('NFC').trim();
+  if (!raw) return '';
+  if ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('`') && raw.endsWith('`'))) {
+    raw = raw.slice(1, -1).trim();
+  }
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:') return '';
+    if (url.username || url.password || !url.hostname) return '';
+    return url.href;
+  } catch (_) {
+    return '';
+  }
+}
+
+function primaryImage(row) {
+  const images=Array.isArray(row?.images)?row.images:[];
+  const candidates=[...images.filter(i=>i?.isPrimary), ...images];
+  for (const image of candidates) {
+    const url=normalizeImageUrl(image?.url);
+    if (url) return url;
+  }
+  return '';
+}
 function buildContext(rows,filters) {
   if(!rows.length) return `\n\n=== LIVE CATALOGUE RESULT ===\nNo active in-stock products matched the customer's request. Do NOT invent a product, price, stock status, or image. Politely ask for another fabric, color, or collection.\n`;
   const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | stock ${p.stock_quantity}${p.description?` | ${String(p.description).slice(0,180)}`:''}${primaryImage(p)?` | IMAGE_URL ${primaryImage(p)}`:''}`);
@@ -39,4 +65,4 @@ async function getCatalogueForMessage(dbUrl,text) {
   try { const filters=extractFilters(text); const products=await searchCatalogue(dbUrl,filters); return {filters,products,context:buildContext(products,filters),wantsImages:wantsCatalogueImages(text)}; }
   catch(error) { console.error('[CATALOGUE AGENT]',error.message); return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n',wantsImages:false}; }
 }
-module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,extractFilters,getCatalogueForMessage,primaryImage};
+module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,extractFilters,getCatalogueForMessage,primaryImage,normalizeImageUrl};
