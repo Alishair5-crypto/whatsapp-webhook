@@ -3,7 +3,7 @@
 // layer. Original AI reasoning/history is untouched; memory is an additive wrapper.
 const { AsyncLocalStorage } = require('async_hooks');
 const { getMemoryContext, remember } = require('../zara-memory');
-const { getCatalogueForMessage, primaryImage } = require('../catalogue/agent');
+const { getCatalogueForMessage, primaryImage, allImages } = require('../catalogue/agent');
 const originalFetch = globalThis.fetch;
 const memoryContext = new AsyncLocalStorage();
 
@@ -74,9 +74,7 @@ async function injectMemoryIntoAI(url, init, ctx) {
 
   if (Array.isArray(payload.messages)) {
     const systemIndex = payload.messages.findIndex(m => m?.role === 'system');
-    if (systemIndex >= 0 && typeof payload.messages[systemIndex].content === 'string') {
-      payload.messages[systemIndex].content += (memory || '') + catalogueContext;
-    }
+    if (systemIndex >= 0 && typeof payload.messages[systemIndex].content === 'string') payload.messages[systemIndex].content += (memory || '') + catalogueContext;
   }
 
   return { ...init, body: JSON.stringify(payload) };
@@ -92,17 +90,22 @@ async function sendCatalogueImages(ctx, headers) {
   if (!ctx?.catalogue?.wantsImages || !ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
   if (!ctx.phone || !process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) return;
 
-  const urls = new Set();
+  const isComplete = Boolean(ctx.catalogue.completeCatalogue);
   const selected = [];
+  const urls = new Set();
   for (const product of ctx.catalogue.products) {
-    const url = primaryImage(product);
-    if (!url || urls.has(url) || !/^https:\/\//i.test(url)) continue;
-    urls.add(url);
-    selected.push({ product, url });
-    if (selected.length >= 3) break;
+    const productUrls = isComplete ? [primaryImage(product)] : allImages(product);
+    for (const url of productUrls) {
+      if (!url || urls.has(url) || !/^https:\/\//i.test(url)) continue;
+      urls.add(url);
+      selected.push({ product, url });
+    }
   }
   if (!selected.length) return;
 
+  // Demand-based requests send every valid image for matching products.
+  // Complete-catalogue requests send the primary image for every matching product.
+  // Sequential sends avoid concurrent WhatsApp rate spikes; no arbitrary 3-image cap.
   ctx.catalogueImagesSent = true;
   for (const item of selected) {
     try {
@@ -126,9 +129,7 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
     const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined));
     const ctx = memoryContext.getStore();
 
-    if (ctx && (isChatCompletion(url) || (url && url.includes('generativelanguage.googleapis.com')))) {
-      init = await injectMemoryIntoAI(url, init, ctx);
-    }
+    if (ctx && (isChatCompletion(url) || (url && url.includes('generativelanguage.googleapis.com')))) init = await injectMemoryIntoAI(url, init, ctx);
 
     if (isElevenLabsTTS(url)) {
       headers.set('Accept', 'audio/mpeg');
@@ -138,10 +139,7 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
           const payload = JSON.parse(body);
           payload.model_id = 'eleven_v3';
           payload.language_code = 'ur';
-          if (typeof payload.text === 'string') {
-            payload.text = normalizeUrdu(payload.text);
-            if (ctx) ctx.aiReply = payload.text;
-          }
+          if (typeof payload.text === 'string') { payload.text = normalizeUrdu(payload.text); if (ctx) ctx.aiReply = payload.text; }
           body = JSON.stringify(payload);
         } catch (_) {}
       }
@@ -163,18 +161,12 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
           payload.text.body = normalizeUrduText(payload.text.body);
           if (ctx) ctx.aiReply = payload.text.body;
           const response = await originalFetch(input, { ...init, headers, body: JSON.stringify(payload) });
-          if (response.ok) {
-            await maybeRemember(ctx);
-            await sendCatalogueImages(ctx, headers);
-          }
+          if (response.ok) { await maybeRemember(ctx); await sendCatalogueImages(ctx, headers); }
           return response;
         }
         if (payload?.type === 'audio' && ctx?.aiReply) {
           const response = await originalFetch(input, { ...init, headers });
-          if (response.ok) {
-            await maybeRemember(ctx);
-            await sendCatalogueImages(ctx, headers);
-          }
+          if (response.ok) { await maybeRemember(ctx); await sendCatalogueImages(ctx, headers); }
           return response;
         }
       } catch (_) {}
@@ -194,11 +186,7 @@ module.exports = async (req, res) => {
     msgId: message?.id || '',
     customerName: (contact?.profile?.name || '').trim(),
     userText: typeof message?.text?.body === 'string' ? message.text.body : '',
-    aiReply: '',
-    remembered: false,
-    catalogueChecked: false,
-    catalogue: null,
-    catalogueImagesSent: false
+    aiReply: '', remembered: false, catalogueChecked: false, catalogue: null, catalogueImagesSent: false
   };
   return memoryContext.run(ctx, () => originalHandler(req, res));
 };
