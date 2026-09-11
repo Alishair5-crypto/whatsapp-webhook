@@ -8,7 +8,7 @@ const COMPLETE_CATALOGUE_WORDS = ['complete catalogue','full catalogue','whole c
 const ORDER_WORDS = ['order','book','booking','buy','purchase','place order','order kar','order laga','آرڈر','منگوانا','خریدنا','بک','بکنگ'];
 const FABRIC_ALIASES = [['lawn','Lawn'],['لان','Lawn'],['linen','Linen'],['لینن','Linen'],['khaddar','Khaddar'],['کھدر','Khaddar'],['karandi','Karandi'],['کرندی','Karandi'],['marina','Marina'],['marena','Marina'],['مارینہ','Marina'],['مرینہ','Marina'],['velvet','Velvet'],['ویلویٹ','Velvet'],['ویلٹ','Velvet'],['dhanak','Dhanak'],['دھنک','Dhanak'],['kotail','Kotail'],['kotai','Kotail'],['کوٹیل','Kotail']];
 const COLLECTION_ALIASES = [['embroidered','Embroidered'],['embroidery','Embroidered'],['کڑھائی','Embroidered'],['printed','Printed'],['print','Printed'],['پرنٹڈ','Printed'],['پرنٹ','Printed']];
-const COLOR_ALIASES = [['black','Black'],['کالا','Black'],['کالی','Black'],['white','White'],['سفید','White'],['red','Red'],['لال','Red'],['blue','Blue'],['نیلا','Blue'],['نیلی','Blue'],['green','Green'],['سبز','Green'],['pink','Pink'],['گلابی','Pink'],['maroon','Maroon'],['میرون','Maroon'],['beige','Beige'],['cream','Cream'],['کریمی','Cream']];
+const COLOR_ALIASES = [['black','Black'],['کالا','Black'],['کالی','Black'],['white','White'],['سفید','White'],['red','Red'],['لال','Red'],['blue','Blue'],['نیلا','Blue'],['نیلی','Blue'],['نیلے','Blue'],['green','Green'],['سبز','Green'],['pink','Pink'],['گلابی','Pink'],['maroon','Maroon'],['میرون','Maroon'],['beige','Beige'],['cream','Cream'],['کریمی','Cream']];
 
 function normalizeText(text) { return String(text || '').normalize('NFC').toLowerCase().replace(/[\u200B-\u200D\uFEFF]/g,' ').replace(/\s+/g,' ').trim(); }
 function hasAny(text, words) { return words.some(w => text.includes(w)); }
@@ -51,12 +51,16 @@ function allImages(row) {
 }
 function buildContext(rows,filters) {
   if(!rows.length) return `\n\n=== LIVE CATALOGUE RESULT ===\nNo active in-stock products matched the customer's request. Do NOT invent a product, price, stock status, or image. Politely ask for another fabric, color, or collection.\n`;
+  const hasImages = rows.some(product => allImages(product).length > 0);
+  const imageInstruction = hasImages
+    ? 'Verified product image URLs are available for the matching records; if the customer asked to see products, naturally mention that their photos are being shared.'
+    : 'NO VERIFIED PRODUCT IMAGE URL IS AVAILABLE for these records. Do NOT say that photos/images have been shared. Give product facts only and tell the customer photos are currently unavailable.';
   const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | stock ${p.stock_quantity}${p.description?` | ${String(p.description).slice(0,180)}`:''}${primaryImage(p)?` | IMAGE_URL ${primaryImage(p)}`:''}`);
-  return `\n\n=== LIVE CATALOGUE RESULT (DATABASE — AUTHORITATIVE) ===\nUse ONLY these live catalogue records for product facts. Never invent product names, prices, colors, stock, or images. If the customer asked to see products, naturally mention the matching items and that their photos are being shared.\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
+  return `\n\n=== LIVE CATALOGUE RESULT (DATABASE — AUTHORITATIVE) ===\nUse ONLY these live catalogue records for product facts. Never invent product names, prices, colors, stock, or images. ${imageInstruction}\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
 }
 async function getCatalogueForMessage(dbUrl,text) {
   if(!isCatalogueIntent(text)) return null;
   try { const filters=extractFilters(text); const products=await searchCatalogue(dbUrl,filters); return {filters,products,context:buildContext(products,filters),wantsImages:wantsCatalogueImages(text),completeCatalogue:isCompleteCatalogueRequest(text)}; }
   catch(error) { console.error('[CATALOGUE AGENT]',error.message); return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n',wantsImages:false,completeCatalogue:false}; }
 }
-module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,extractFilters,getCatalogueForMessage,primaryImage,allImages,normalizeImageUrl,isCompleteCatalogueRequest};
+module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,extractFilters,getCatalogueForMessage,primaryImage,allImages,normalizeImageUrl,isCompleteCatalogueRequest,buildContext};
