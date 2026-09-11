@@ -34,8 +34,10 @@ test('catalogue context never claims photos when records have no images', () => 
   assert.match(context, /NO VERIFIED PRODUCT IMAGE URL IS AVAILABLE/);
   assert.doesNotMatch(context, /photos are being shared/);
 });
-test('catalogue context does not invent stock when inventory is unverified', () => {
-  const context = buildContext([{ name: 'ML1203 Blue', collection: 'Spring/Summer 2026', fabric: 'Lawn', color: 'Blue', price: 5590, currency: 'PKR', inventory_verified: false, images: [{ url: 'https://example.com/blue.jpg', isPrimary: true }] }], { fabric: 'Lawn', color: 'Blue', collection: '', name: '', limit: 5 });
+test('catalogue context does not expose raw image URLs to the AI reply generator', () => {
+  const context = buildContext([{ name: 'ML1203 Blue', collection: 'Spring/Summer 2026', fabric: 'Lawn', color: 'Blue', price: 3600, currency: 'PKR', inventory_verified: false, images: [{ url: 'https://example.com/blue.jpg', isPrimary: true }] }], { fabric: 'Lawn', color: 'Blue', collection: '', name: '', limit: 5 });
+  assert.match(context, /NEVER print, quote, rewrite, shorten, or invent an image URL/);
+  assert.doesNotMatch(context, /IMAGE_URL/);
+  assert.doesNotMatch(context, /https:\/\/example\.com\/blue\.jpg/);
   assert.match(context, /stock NOT VERIFIED/);
-  assert.match(context, /IMAGE_URL https:\/\/example\.com\/blue\.jpg/);
 });
