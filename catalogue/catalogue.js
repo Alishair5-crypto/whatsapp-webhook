@@ -61,7 +61,7 @@ async function searchCatalogue(dbUrl, filters = {}) {
       p.currency,
       p.description,
       i.stock_quantity,
-      (i.product_id IS NOT NULL) AS inventory_verified,
+      (i.product_id IS NOT NULL AND i.stock_quantity > 0) AS inventory_verified,
       COALESCE(
         json_agg(
           json_build_object(
