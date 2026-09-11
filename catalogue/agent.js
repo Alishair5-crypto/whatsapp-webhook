@@ -53,9 +53,9 @@ function buildContext(rows,filters) {
   if(!rows.length) return `\n\n=== LIVE CATALOGUE RESULT ===\nNo active catalogue products matched the customer's request. Do NOT invent a product, price, stock status, or image. Politely ask for another fabric, color, or collection.\n`;
   const hasImages = rows.some(product => allImages(product).length > 0);
   const imageInstruction = hasImages
-    ? 'Verified product image URLs are available for the matching records; if the customer asked to see products, naturally mention that their photos are being shared.'
+    ? 'Verified product image URLs are available for the matching records. If the customer asked to see products, mention that the matching photos are being shared by the system. NEVER print, quote, rewrite, shorten, or invent an image URL in the customer-facing reply.'
     : 'NO VERIFIED PRODUCT IMAGE URL IS AVAILABLE for these records. Do NOT say that photos/images have been shared. Give product facts only and tell the customer photos are currently unavailable.';
-  const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | ${p.inventory_verified ? `stock ${p.stock_quantity}` : 'stock NOT VERIFIED'}${p.description?` | ${String(p.description).slice(0,180)}`:''}${primaryImage(p)?` | IMAGE_URL ${primaryImage(p)}`:''}`);
+  const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | ${p.inventory_verified ? `stock ${p.stock_quantity}` : 'stock NOT VERIFIED'}${p.description?` | ${String(p.description).slice(0,180)}`:''}`);
   return `\n\n=== LIVE CATALOGUE RESULT (DATABASE — AUTHORITATIVE) ===\nUse ONLY these live catalogue records for product facts. Never invent product names, prices, colors, stock, or images. ${imageInstruction}\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
 }
 async function getCatalogueForMessage(dbUrl,text) {
