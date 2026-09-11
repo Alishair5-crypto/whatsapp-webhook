@@ -12,6 +12,25 @@ function normalizeUrduText(text) { if (typeof text !== 'string' || !text) return
 function isElevenLabsTTS(url) { return url && url.includes('api.elevenlabs.io/v1/text-to-speech/'); }
 function isWhatsAppSend(url) { return url && /graph\.facebook\.com\/v\d+\.\d+\//.test(url) && /\/messages(?:\?|$)/.test(url); }
 function isChatCompletion(url) { return url && /\/chat\/completions(?:\?|$)/.test(url); }
+function isGoogleSheetsAppend(url) { return url && /sheets\.googleapis\.com\/v4\/spreadsheets\/[^/]+\/values\/Sheet1!A:J:append(?:\?|$)/.test(url); }
+async function fetchGoogleSheetsWithRetry(input, init = {}) {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await originalFetch(input, init);
+    if (response.ok) return response;
+    const retryable = [408, 429, 500, 502, 503, 504].includes(response.status);
+    if (!retryable || attempt === maxAttempts) {
+      let detail = '';
+      try { detail = (await response.clone().text()).slice(0, 1000); } catch (_) {}
+      throw new Error(`[SHEET APPEND] HTTP ${response.status}${detail ? `: ${detail}` : ''}`);
+    }
+    const retryAfter = Number(response.headers.get('retry-after'));
+    const delayMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10000) : attempt * 1500;
+    console.warn(`[SHEET APPEND] Retry ${attempt + 1}/${maxAttempts} after HTTP ${response.status}`);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+  throw new Error('[SHEET APPEND] Exhausted retries');
+}
 async function injectMemoryIntoAI(url, init, ctx) {
   if (!ctx || !init || typeof init.body !== 'string') return init; let payload; try { payload = JSON.parse(init.body); } catch (_) { return init; } if (!ctx.phone) return init;
   let query = ctx.userText || ''; try { const last = payload?.contents?.[payload.contents.length - 1]?.parts?.[0]?.text; if (typeof last === 'string') query = last; } catch (_) {}
@@ -27,7 +46,7 @@ async function maybeRemember(ctx) { if (!ctx || ctx.remembered || !ctx.phone || 
 async function sendCatalogueImages(ctx, headers) {
   if (!ctx?.catalogue?.wantsImages || !ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
   if (!ctx.phone || !process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) return;
-  const isComplete = Boolean(ctx.catalogue.completeCatalogue); const selected = []; const urls = new Set();
+  const selected = []; const urls = new Set();
   for (const product of ctx.catalogue.products) {
     const productUrls = allImages(product);
     for (const url of productUrls) { if (!url || urls.has(url) || !/^https:\/\//i.test(url)) continue; urls.add(url); selected.push({ product, url }); }
@@ -47,6 +66,7 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input?.url; const headers = new Headers(init.headers || (typeof input !== 'string' ? input.headers : undefined)); const ctx = memoryContext.getStore();
     if (ctx && (isChatCompletion(url) || (url && url.includes('generativelanguage.googleapis.com')))) init = await injectMemoryIntoAI(url, init, ctx);
+    if (isGoogleSheetsAppend(url)) return fetchGoogleSheetsWithRetry(input, { ...init, headers });
     if (isElevenLabsTTS(url)) {
       headers.set('Accept', 'audio/mpeg'); let body = init.body;
       if (typeof body === 'string') { try { const payload = JSON.parse(body); payload.model_id = 'eleven_v3'; payload.language_code = 'ur'; if (typeof payload.text === 'string') { payload.text = normalizeUrdu(payload.text); if (ctx) ctx.aiReply = payload.text; } body = JSON.stringify(payload); } catch (_) {} }
