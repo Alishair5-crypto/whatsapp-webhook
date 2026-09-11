@@ -8,7 +8,7 @@ const COMPLETE_CATALOGUE_WORDS = ['complete catalogue','full catalogue','whole c
 const ORDER_WORDS = ['order','book','booking','buy','purchase','place order','order kar','order laga','آرڈر','منگوانا','خریدنا','بک','بکنگ'];
 const FABRIC_ALIASES = [['lawn','Lawn'],['لان','Lawn'],['linen','Linen'],['لینن','Linen'],['khaddar','Khaddar'],['کھدر','Khaddar'],['karandi','Karandi'],['کرندی','Karandi'],['marina','Marina'],['marena','Marina'],['مارینہ','Marina'],['مرینہ','Marina'],['velvet','Velvet'],['ویلویٹ','Velvet'],['ویلٹ','Velvet'],['dhanak','Dhanak'],['دھنک','Dhanak'],['kotail','Kotail'],['kotai','Kotail'],['کوٹیل','Kotail']];
 const COLLECTION_ALIASES = [['embroidered','Embroidered'],['embroidery','Embroidered'],['کڑھائی','Embroidered'],['printed','Printed'],['print','Printed'],['پرنٹڈ','Printed'],['پرنٹ','Printed']];
-const COLOR_ALIASES = [['black','Black'],['کالا','Black'],['کالی','Black'],['white','White'],['سفید','White'],['red','Red'],['لال','Red'],['blue','Blue'],['نیلا','Blue'],['نیلی','Blue'],['نیلے','Blue'],['green','Green'],['سبز','Green'],['pink','Pink'],['گلابی','Pink'],['maroon','Maroon'],['میرون','Maroon'],['beige','Beige'],['cream','Cream'],['کریمی','Cream']];
+const COLOR_ALIASES = [['black','Black'],['کالا','Black'],['کالی','Black'],['white','White'],['سفید','White'],['red','Red'],['لال','Red'],['blue','Blue'],['نیلا','Blue'],['نیلی','Blue'],['نیلے','Blue'],['green','Green'],['سبز','Green'],['pink','Pink'],['گلابی','Pink'],['maroon','Maroon'],['میرون','Maroon'],['beige','Beige'],['cream','Cream']];
 
 function normalizeText(text) { return String(text || '').normalize('NFC').toLowerCase().replace(/[\u200B-\u200D\uFEFF]/g,' ').replace(/\s+/g,' ').trim(); }
 function hasAny(text, words) { return words.some(w => text.includes(w)); }
@@ -29,7 +29,7 @@ function wantsCatalogueImages(text) {
   const visualVerbs=['show','shown','show me','display','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','کچھ دکھ','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں'];
   return hasAny(t,imageWords) || (product && hasAny(t,visualVerbs));
 }
-function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:isCompleteCatalogueRequest(t) ? 20 : 5}; }
+function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:isCompleteCatalogueRequest(t) ? 50 : 5}; }
 function money(row) { const value=Number(row?.price); return Number.isFinite(value) ? `${row?.currency||'PKR'} ${value.toLocaleString('en-PK')}` : `${row?.currency||'PKR'} ${row?.price??''}`.trim(); }
 function normalizeImageUrl(value) {
   if (typeof value !== 'string') return '';
@@ -50,12 +50,12 @@ function allImages(row) {
   return urls;
 }
 function buildContext(rows,filters) {
-  if(!rows.length) return `\n\n=== LIVE CATALOGUE RESULT ===\nNo active in-stock products matched the customer's request. Do NOT invent a product, price, stock status, or image. Politely ask for another fabric, color, or collection.\n`;
+  if(!rows.length) return `\n\n=== LIVE CATALOGUE RESULT ===\nNo active catalogue products matched the customer's request. Do NOT invent a product, price, stock status, or image. Politely ask for another fabric, color, or collection.\n`;
   const hasImages = rows.some(product => allImages(product).length > 0);
   const imageInstruction = hasImages
     ? 'Verified product image URLs are available for the matching records; if the customer asked to see products, naturally mention that their photos are being shared.'
     : 'NO VERIFIED PRODUCT IMAGE URL IS AVAILABLE for these records. Do NOT say that photos/images have been shared. Give product facts only and tell the customer photos are currently unavailable.';
-  const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | stock ${p.stock_quantity}${p.description?` | ${String(p.description).slice(0,180)}`:''}${primaryImage(p)?` | IMAGE_URL ${primaryImage(p)}`:''}`);
+  const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | ${p.inventory_verified ? `stock ${p.stock_quantity}` : 'stock NOT VERIFIED'}${p.description?` | ${String(p.description).slice(0,180)}`:''}${primaryImage(p)?` | IMAGE_URL ${primaryImage(p)}`:''}`);
   return `\n\n=== LIVE CATALOGUE RESULT (DATABASE — AUTHORITATIVE) ===\nUse ONLY these live catalogue records for product facts. Never invent product names, prices, colors, stock, or images. ${imageInstruction}\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
 }
 async function getCatalogueForMessage(dbUrl,text) {
