@@ -40,7 +40,7 @@ function normalizeFilters(filters = {}) {
     color: clean(filters.color),
     collection: clean(filters.collection),
     name: clean(filters.name),
-    limit: positiveInt(filters.limit, 5, 20)
+    limit: positiveInt(filters.limit, 5, 50)
   };
 }
 
@@ -61,6 +61,7 @@ async function searchCatalogue(dbUrl, filters = {}) {
       p.currency,
       p.description,
       i.stock_quantity,
+      (i.product_id IS NOT NULL) AS inventory_verified,
       COALESCE(
         json_agg(
           json_build_object(
@@ -73,15 +74,14 @@ async function searchCatalogue(dbUrl, filters = {}) {
         '[]'::json
       ) AS images
     FROM catalog_products p
-    JOIN catalog_inventory i ON i.product_id = p.id
+    LEFT JOIN catalog_inventory i ON i.product_id = p.id
     LEFT JOIN catalog_images ci ON ci.product_id = p.id
     WHERE p.status = 'active'
-      AND i.stock_quantity > 0
       AND (${fabric} = '' OR LOWER(p.fabric) = LOWER(${fabric}))
       AND (${color} = '' OR LOWER(p.color) = LOWER(${color}))
       AND (${collection} = '' OR LOWER(p.collection) = LOWER(${collection}))
       AND (${name} = '' OR LOWER(p.name) LIKE LOWER(${`%${name}%`}))
-    GROUP BY p.id, i.stock_quantity
+    GROUP BY p.id, i.stock_quantity, i.product_id
     ORDER BY p.updated_at DESC, p.id DESC
     LIMIT ${limit}
   `;
