@@ -24,7 +24,8 @@ test('rejects invalid limits and clamps oversized valid limits', () => {
   assert.equal(normalizeFilters({ limit: 0 }).limit, 5);
   assert.equal(normalizeFilters({ limit: -1 }).limit, 5);
   assert.equal(normalizeFilters({ limit: 'abc' }).limit, 5);
-  assert.equal(normalizeFilters({ limit: 999 }).limit, 20);
+  assert.equal(normalizeFilters({ limit: 999 }).limit, 50);
+  assert.equal(normalizeFilters({ limit: 50 }).limit, 50);
   assert.equal(normalizeFilters({ limit: 1 }).limit, 1);
 });
 
