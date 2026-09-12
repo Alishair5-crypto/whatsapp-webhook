@@ -22,9 +22,10 @@
 //  [U17] audioStream.ok check — crash fix
 //  [U18] ElevenLabs 429 → clean text fallback (no crash)
 //  [U19] Neon DB persistent memory (optional, fallback to in-memory)
-//  [U20] Google Sheets order save via [ORDER:...] tag (optional)
+//  [U20] Google Sheets order save via [ORDER:...] tag (hardened)
 //  [U21] System prompt multilingual — English instructions, default Urdu script
 //  [U22] Fallback messages in Urdu script (not Roman Urdu)
+//  [U23] Order persistence validation + Sheets status/retry + duplicate fingerprinting
 //
 //  VOICE LOGIC (same as working base — NOT changed):
 //  customer voice → Groq STT → Gemini → ElevenLabs → WhatsApp voice note
@@ -154,21 +155,110 @@ async function getGToken(email, key) {
   return null;
 }
 function parseOrderTag(text) {
-  const m = text.match(/\[ORDER:([^\]]+)\]/i); if (!m) return null;
+  const m = String(text || '').match(/\[ORDER:([^\]]+)\]/i); if (!m) return null;
   const o = {};
-  for (const p of m[1].split('|')) { const [k,...v]=p.split('='); if (k&&v.length) o[k.trim().toLowerCase()]=v.join('=').trim(); }
+  for (const p of m[1].split('|')) {
+    const [k,...v] = p.split('=');
+    if (k && v.length) o[k.trim().toLowerCase()] = v.join('=').trim();
+  }
   return Object.keys(o).length ? o : null;
 }
+
+function normalizeOrder(order, phone) {
+  if (!order || !phone) return null;
+  const out = {
+    name: String(order.name || '').trim(),
+    product: String(order.product || '').trim(),
+    qty: String(order.qty || '').trim(),
+    price: String(order.price || '').replace(/[^\d.]/g, '').trim(),
+    payment: String(order.payment || '').trim(),
+    address: fixCities(String(order.address || '').trim()),
+    city: fixCities(String(order.city || '').trim()),
+  };
+  if (!out.name || !out.product || !out.qty || !out.price || !out.payment || !out.address || !out.city) return null;
+  if (!/^\d+(?:\.\d+)?$/.test(out.qty) || Number(out.qty) < 1 || Number(out.qty) > 100) return null;
+  if (!/^\d+(?:\.\d+)?$/.test(out.price) || Number(out.price) <= 0 || Number(out.price) > 1000000) return null;
+  if (!/^(?:cod|cash on delivery|jazzcash|easypaisa)$/i.test(out.payment)) return null;
+  if (out.address.length < 8 || out.address.length > 500 || out.city.length < 2 || out.city.length > 80) return null;
+  return out;
+}
+
+function orderFingerprint(order, phone) {
+  return crypto.createHash('sha256')
+    .update([phone, order.name, order.product, order.qty, order.price, order.payment.toLowerCase(), order.address.toLowerCase(), order.city.toLowerCase()].join('|'))
+    .digest('hex')
+    .slice(0, 20);
+}
+
+if (!global._savedOrderFingerprints) global._savedOrderFingerprints = new Map();
+
 async function saveToSheet(sid, email, key, order, phone) {
-  if (!sid||!email||!key) return;
+  const normalized = normalizeOrder(order, phone);
+  if (!sid || !email || !key) {
+    console.warn('[ORDER SAVE] Not configured; order not persisted.');
+    return { ok:false, reason:'not_configured' };
+  }
+  if (!normalized) {
+    console.error('[ORDER SAVE] Validation failed; refusing incomplete/invalid order.');
+    return { ok:false, reason:'validation' };
+  }
+
+  const fingerprint = orderFingerprint(normalized, phone);
+  const now = Date.now();
+  for (const [fp, expiresAt] of global._savedOrderFingerprints) {
+    if (expiresAt <= now) global._savedOrderFingerprints.delete(fp);
+  }
+  if (global._savedOrderFingerprints.has(fingerprint)) {
+    console.log('[ORDER SAVE] Duplicate suppressed:', fingerprint);
+    return { ok:true, duplicate:true };
+  }
+
   try {
-    const tok = await getGToken(email, key); if (!tok) return;
-    const row = [new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}), order.name||'', phone||'', order.product||'', order.qty||'', order.price||'', order.payment||'', order.address||'', order.city||'', 'Pending'];
-    await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:J:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`, {
-      method:'POST', headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'}, body:JSON.stringify({values:[row]})
-    });
-    console.log('[SHEET] Order saved ✓');
-  } catch(e) { console.error('[SHEET]', e.message); }
+    const tok = await getGToken(email, key);
+    if (!tok) throw new Error('Google access token unavailable');
+
+    // RAW prevents customer-controlled strings from being interpreted as Sheets formulas.
+    const row = [
+      new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),
+      normalized.name,
+      phone,
+      normalized.product,
+      normalized.qty,
+      normalized.price,
+      normalized.payment,
+      normalized.address,
+      normalized.city,
+      'Pending'
+    ];
+
+    const url = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:J:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
+    const retryable = new Set([408,429,500,502,503,504]);
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const r = await fetch(url, {
+        method:'POST',
+        headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},
+        body:JSON.stringify({values:[row]})
+      });
+
+      if (r.ok) {
+        global._savedOrderFingerprints.set(fingerprint, Date.now() + 30 * 60 * 1000);
+        console.log('[ORDER SAVE] Success:', fingerprint);
+        return { ok:true, duplicate:false, fingerprint };
+      }
+
+      const body = await r.text().catch(() => '');
+      console.error(`[ORDER SAVE] Google Sheets ${r.status} attempt ${attempt}:`, body.slice(0,200));
+      if (!retryable.has(r.status) || attempt === 3) {
+        return { ok:false, reason:`sheets_${r.status}` };
+      }
+      await sleep(1000 * attempt);
+    }
+  } catch (e) {
+    console.error('[ORDER SAVE] Exception:', e?.message || e);
+    return { ok:false, reason:'exception' };
+  }
+  return { ok:false, reason:'unknown' };
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -300,9 +390,9 @@ After 10PM: brief reply, full answer next morning
 3. Ask full delivery address + city
 4. Confirm payment method
 
-When order fully confirmed (address + payment both received), write this tag on its own line:
+When order fully confirmed (address + payment both received), you MUST write this tag on its own line:
 [ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]
-Write it ONCE only. Always spell city correctly.
+Write it ONCE only, and ONLY after every field above is actually confirmed by the customer. Never invent missing fields. Always spell city correctly.
 
 === BOSS ALERT — IMMEDIATELY ===
 🚨 Angry/rude customer | 🛍️ Wholesale 10+ | 💰 PKR 10,000+
@@ -572,7 +662,16 @@ Remember full conversation. Use context. Never repeat answered questions.
         const orderTag = parseOrderTag(aiReply);
         if (orderTag) {
           aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
-          saveToSheet(GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY, orderTag, fromNumber).catch(() => {});
+          const saveResult = await saveToSheet(
+            GOOGLE_SHEETS_ID,
+            GOOGLE_SA_EMAIL,
+            GOOGLE_SA_KEY,
+            orderTag,
+            fromNumber
+          );
+          if (!saveResult.ok && !saveResult.duplicate) {
+            console.error('[ORDER SAVE] Persistence not confirmed:', saveResult.reason);
+          }
         }
 
         aiReply = fixCities(aiReply);
