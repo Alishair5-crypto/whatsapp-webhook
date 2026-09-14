@@ -6,6 +6,7 @@ const { getMemoryContext, remember } = require('../zara-memory');
 const { getCatalogueForMessage, primaryImage, allImages } = require('../catalogue/agent');
 const originalFetch = globalThis.fetch;
 const memoryContext = new AsyncLocalStorage();
+const catalogueRotation = new Map();
 const URDU_NORMALIZATION = [['مارینا', 'مرینہ'], ['مارینا فیبرک', 'مرینہ فیبرک'], ['ویلٹ', 'ویلویٹ'], ['ویلویٹ', 'ویلویٹ'], ['فابریکس', 'فیبرکس'], ['فابریک', 'فیبرک'], ['فیبرکس', 'فیبرکس'], ['سوٹس', 'سوٹس'], ['سوٹ', 'سوٹ'], ['رچ', 'شاندار'], ['پریمیم', 'اعلیٰ معیار کا'], ['کوالٹی', 'معیار'], ['کلر', 'رنگ'], ['کلرز', 'رنگ'], ['ڈیزائن', 'ڈیزائن'], ['پرنٹڈ', 'پرنٹ شدہ'], ['ایمبروئیڈری', 'کڑھائی'], ['ایمبروئیڈرڈ', 'کڑھائی والا'], ['کلیکشن', 'کلیکشن'], ['آرڈر', 'آرڈر'], ['ایویلیبل', 'دستیاب'], ['ایویلیبل ہیں', 'دستیاب ہیں'], ['براہ کرم', 'براہِ کرم'], ['مہربانی کر کے', 'مہربانی کرکے'], ['آپکو', 'آپ کو'], ['آپکے', 'آپ کے'], ['آپکی', 'آپ کی'], ['اسکے', 'اس کے'], ['اسکی', 'اس کی'], ['انکے', 'ان کے'], ['انکی', 'ان کی'], ['کہتےہیں', 'کہتے ہیں'], ['چاہتےہیں', 'چاہتے ہیں'], ['ہیں—', 'ہیں — '], ['ہے—', 'ہے — ']];
 function normalizeUrdu(text) { if (typeof text !== 'string' || !text) return text; let out = text.normalize('NFC'); for (const [from, to] of URDU_NORMALIZATION) out = out.split(from).join(to); out = out.replace(/[\u200B-\u200D\uFEFF]/g, ''); return out.replace(/\s{2,}/g, ' ').trim(); }
 function normalizeUrduText(text) { if (typeof text !== 'string' || !text) return text; let out = text.normalize('NFC'); for (const [from, to] of URDU_NORMALIZATION) out = out.split(from).join(to); return out.replace(/[\u200B-\u200D\uFEFF]/g, ''); }
@@ -43,16 +44,25 @@ async function injectMemoryIntoAI(url, init, ctx) {
   return { ...init, body: JSON.stringify(payload) };
 }
 async function maybeRemember(ctx) { if (!ctx || ctx.remembered || !ctx.phone || !ctx.msgId || !ctx.userText || !ctx.aiReply) return; ctx.remembered = true; await remember(process.env.DATABASE_URL || '', ctx.phone, ctx.msgId, ctx.userText, ctx.aiReply, ctx.customerName); }
+function rotateProducts(products, phone) {
+  if (!Array.isArray(products) || products.length < 2 || !phone) return products || [];
+  const previous = catalogueRotation.get(phone) || 0;
+  const offset = previous % products.length;
+  catalogueRotation.set(phone, (offset + 1) % products.length);
+  return products.slice(offset).concat(products.slice(0, offset));
+}
 async function sendCatalogueImages(ctx, headers) {
   if (!ctx?.catalogue?.wantsImages || !ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
   if (!ctx.phone || !process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) return;
+  const products = rotateProducts(ctx.catalogue.products, ctx.phone);
   const selected = []; const urls = new Set();
-  for (const product of ctx.catalogue.products) {
+  for (const product of products) {
     const productUrls = allImages(product);
     for (const url of productUrls) { if (!url || urls.has(url) || !/^https:\/\//i.test(url)) continue; urls.add(url); selected.push({ product, url }); }
   }
   if (!selected.length) return;
   ctx.catalogueImagesSent = true;
+  console.log('[CATALOGUE] Sending relevant image set:', selected.length, 'images');
   for (const item of selected) {
     try {
       const price = Number(item.product?.price); const priceText = Number.isFinite(price) ? `${item.product?.currency || 'PKR'} ${price.toLocaleString('en-PK')}` : ''; const caption = `${item.product?.name || 'Product'}${priceText ? ` — ${priceText}` : ''}`.slice(0, 1024);
