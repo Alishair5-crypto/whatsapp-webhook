@@ -1,6 +1,7 @@
 // Voice-note compatibility wrapper.
 // Keeps the verified voice pipeline intact and adds a TTS/text Urdu normalization
 // layer. Original AI reasoning/history is untouched; memory is an additive wrapper.
+const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const { getMemoryContext, remember } = require('../zara-memory');
 const { getCatalogueForMessage, primaryImage, allImages } = require('../catalogue/agent');
@@ -31,6 +32,60 @@ async function fetchGoogleSheetsWithRetry(input, init = {}) {
     await new Promise(resolve => setTimeout(resolve, delayMs));
   }
   throw new Error('[SHEET APPEND] Exhausted retries');
+}
+function normalizeRecoveredOrder(order, phone) {
+  if (!order || !phone) return null;
+  const out = {
+    name: String(order.name || '').trim(), product: String(order.product || '').trim(), qty: String(order.qty || '').trim(),
+    price: String(order.price || '').replace(/[^\d.]/g, '').trim(), payment: String(order.payment || '').trim(),
+    address: normalizeUrduText(String(order.address || '').trim()), city: normalizeUrduText(String(order.city || '').trim())
+  };
+  if (!out.name || !out.product || !out.qty || !out.price || !out.payment || !out.address || !out.city) return null;
+  if (!/^\d+(?:\.\d+)?$/.test(out.qty) || Number(out.qty) < 1 || Number(out.qty) > 100) return null;
+  if (!/^\d+(?:\.\d+)?$/.test(out.price) || Number(out.price) <= 0 || Number(out.price) > 1000000) return null;
+  if (!/^(?:cod|cash on delivery|jazzcash|easypaisa)$/i.test(out.payment)) return null;
+  if (out.address.length < 8 || out.address.length > 500 || out.city.length < 2 || out.city.length > 80) return null;
+  return out;
+}
+async function getServiceAccountToken(email, key) {
+  if (!email || !key) return null;
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const b64 = value => Buffer.from(value).toString('base64url');
+    const header = b64(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+    const payload = b64(JSON.stringify({ iss: email, scope: 'https://www.googleapis.com/auth/spreadsheets', aud: 'https://oauth2.googleapis.com/token', exp: now + 3600, iat: now }));
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(`${header}.${payload}`);
+    const signature = signer.sign(key.replace(/\\n/g, '\n'), 'base64url');
+    const response = await originalFetch('https://oauth2.googleapis.com/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${header}.${payload}.${signature}` });
+    const data = await response.json().catch(() => null);
+    return data?.access_token || null;
+  } catch (error) { console.error('[ORDER RECOVERY TOKEN]', error.message); return null; }
+}
+async function recoverConfirmedOrder(ctx) {
+  if (!ctx?.phone || !ctx.userText || !process.env.GEMINI_API_KEY) return null;
+  if (!process.env.GOOGLE_SHEETS_ID || !process.env.GOOGLE_SA_EMAIL || !process.env.GOOGLE_SA_KEY) return null;
+  if (/\[ORDER:/i.test(ctx.aiReply || '')) return null;
+  try {
+    const memory = await getMemoryContext(process.env.DATABASE_URL || '', ctx.phone, ctx.userText);
+    const prompt = `Extract an order ONLY if the customer has explicitly confirmed every required field. Required: name, product, qty, price, payment (COD/JazzCash/EasyPaisa), full delivery address, city. Never infer missing fields. Return ONLY JSON or null with keys name, product, qty, price, payment, address, city. Customer message: ${ctx.userText}\nZara reply: ${ctx.aiReply}\nRelevant saved conversation context: ${String(memory || '').slice(-7000)}`;
+    const response = await originalFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ system_instruction: { parts: [{ text: 'You are a strict order validator. Never guess. Return JSON only.' }] }, contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 300, responseMimeType: 'application/json' } }) });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!raw || raw === 'null') return null;
+    const order = normalizeRecoveredOrder(JSON.parse(raw), ctx.phone);
+    if (!order) return null;
+    const token = await getServiceAccountToken(process.env.GOOGLE_SA_EMAIL.trim(), process.env.GOOGLE_SA_KEY.trim());
+    if (!token) return null;
+    const row = [new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' }), order.name, ctx.phone, order.product, order.qty, order.price, order.payment, order.address, order.city, 'Pending'];
+    const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${process.env.GOOGLE_SHEETS_ID.trim()}/values/Sheet1!A:J:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
+    const appendResponse = await fetchGoogleSheetsWithRetry(sheetUrl, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: [row] }) });
+    const result = await appendResponse.json().catch(() => null);
+    if (Number(result?.updates?.updatedRows || 0) < 1) { console.error('[ORDER RECOVERY] Sheets returned no updated row'); return null; }
+    console.log('[ORDER RECOVERY] Confirmed order saved to Google Sheets:', order.name, order.product, order.qty);
+    return order;
+  } catch (error) { console.error('[ORDER RECOVERY] Failed:', error.message); return null; }
 }
 async function injectMemoryIntoAI(url, init, ctx) {
   if (!ctx || !init || typeof init.body !== 'string') return init; let payload; try { payload = JSON.parse(init.body); } catch (_) { return init; } if (!ctx.phone) return init;
@@ -87,8 +142,13 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
     if (isWhatsAppSend(url) && typeof init.body === 'string') {
       try {
         const payload = JSON.parse(init.body);
-        if (payload?.type === 'text' && typeof payload?.text?.body === 'string') { payload.text.body = normalizeUrduText(payload.text.body); if (ctx) ctx.aiReply = payload.text.body; const response = await originalFetch(input, { ...init, headers, body: JSON.stringify(payload) }); if (response.ok) { await maybeRemember(ctx); await sendCatalogueImages(ctx, headers); } return response; }
-        if (payload?.type === 'audio' && ctx?.aiReply) { const response = await originalFetch(input, { ...init, headers }); if (response.ok) { await maybeRemember(ctx); await sendCatalogueImages(ctx, headers); } return response; }
+        if (payload?.type === 'text' && typeof payload?.text?.body === 'string') {
+          payload.text.body = normalizeUrduText(payload.text.body); if (ctx) ctx.aiReply = payload.text.body;
+          const response = await originalFetch(input, { ...init, headers, body: JSON.stringify(payload) });
+          if (response.ok) { await maybeRemember(ctx); await recoverConfirmedOrder(ctx); await sendCatalogueImages(ctx, headers); }
+          return response;
+        }
+        if (payload?.type === 'audio' && ctx?.aiReply) { const response = await originalFetch(input, { ...init, headers }); if (response.ok) { await maybeRemember(ctx); await recoverConfirmedOrder(ctx); await sendCatalogueImages(ctx, headers); } return response; }
       } catch (_) {}
     }
     return originalFetch(input, init);
