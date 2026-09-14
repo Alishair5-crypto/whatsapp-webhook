@@ -34,16 +34,6 @@ function positiveInt(value, fallback, max) {
   return Math.min(n, max);
 }
 
-function normalizeFilters(filters = {}) {
-  return {
-    fabric: clean(filters.fabric),
-    color: clean(filters.color),
-    collection: clean(filters.collection),
-    name: clean(filters.name),
-    limit: positiveInt(filters.limit, 5, 50)
-  };
-}
-
 async function searchCatalogue(dbUrl, filters = {}) {
   const sql = getSql(dbUrl);
   if (!sql) throw new Error('Catalogue database is not configured');
@@ -87,6 +77,18 @@ async function searchCatalogue(dbUrl, filters = {}) {
   `;
 
   return rows || [];
+}
+
+function normalizeFilters(filters = {}) {
+  return {
+    fabric: clean(filters.fabric),
+    color: clean(filters.color),
+    collection: clean(filters.collection),
+    name: clean(filters.name),
+    // Catalogue visual requests may need the complete relevant set.
+    // The hard safety ceiling remains 50 records.
+    limit: positiveInt(filters.limit, 50, 50)
+  };
 }
 
 module.exports = {
