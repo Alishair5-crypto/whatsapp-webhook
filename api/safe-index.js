@@ -13,6 +13,10 @@ function isWhatsAppMedia(url) {
   return typeof url === 'string' && /graph\.facebook\.com\/v\d+\.\d+\//.test(url) && /\/media(?:\?|$)/.test(url);
 }
 
+function isGeminiGenerateContent(url) {
+  return typeof url === 'string' && /generativelanguage\.googleapis\.com\/v1beta\/models\/[^/]+:generateContent/.test(url);
+}
+
 function isCatalogueBlobUrl(url) {
   return typeof url === 'string' && /^https:\/\/[a-z0-9-]+\.public\.blob\.vercel-storage\.com\//i.test(url);
 }
@@ -67,6 +71,19 @@ async function uploadCatalogueBlobToWhatsApp(blobUrl, headers, phoneNumberId) {
 
 globalThis.fetch = async (input, init = {}) => {
   const url = typeof input === 'string' ? input : input?.url;
+
+  // Restore the old readable chat trace without changing the AI request or response.
+  if (isGeminiGenerateContent(url) && typeof init.body === 'string') {
+    try {
+      const payload = JSON.parse(init.body);
+      const contents = Array.isArray(payload?.contents) ? payload.contents : [];
+      const lastUser = [...contents].reverse().find(item => item?.role === 'user');
+      const customerText = lastUser?.parts?.map(part => part?.text || '').filter(Boolean).join(' ').trim();
+      if (customerText) console.log('[CHAT] Customer:', customerText);
+    } catch (_) {}
+    return originalFetch(input, init);
+  }
+
   if (!isWhatsAppMessages(url) || typeof init.body !== 'string') {
     return originalFetch(input, init);
   }
@@ -75,6 +92,7 @@ globalThis.fetch = async (input, init = {}) => {
     const payload = JSON.parse(init.body);
     if (payload?.type === 'text' && typeof payload?.text?.body === 'string') {
       payload.text.body = stripCatalogueBlobUrls(payload.text.body);
+      console.log('[CHAT] Zara:', payload.text.body);
       return originalFetch(input, { ...init, body: JSON.stringify(payload) });
     }
 
