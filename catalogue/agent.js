@@ -2,8 +2,9 @@
 
 const { searchCatalogue } = require('./catalogue');
 
-const PRODUCT_WORDS = ['lawn','linen','khaddar','karandi','marina','velvet','dhanak','kotail','embroidered','embroidery','printed','fabric','suit','suits','لان','لینن','کھدر','کرندی','مرینہ','مارینہ','ویلویٹ','ویلٹ','دھنک','کوٹیل','کڑھائی','پرنٹ','سوٹ','کپڑا','کپڑے'];
-const BROWSE_WORDS = ['show','shown','show me','display','available','availability','catalogue','catalog','pics','pic','picture','pictures','photo','photos','image','images','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','hai kya','hain kya','kuch hai','kuch dikh','available hai','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں','تصویر','تصاویر','فوٹو','پکس','دستیاب','موجود','کچھ ہے','کچھ دکھ'];
+const PRODUCT_WORDS = ['lawn','linen','khaddar','karandi','marina','velvet','dhanak','kotail','embroidered','embroidery','printed','fabric','suit','suits','dress','dresses','design','designs','collection','3 piece','3-piece','three piece','لان','لینن','کھدر','کرندی','مرینہ','مارینہ','ویلویٹ','ویلٹ','دھنک','کوٹیل','کڑھائی','پرنٹ','سوٹ','کپڑا','کپڑے','ڈریس','ڈریسس','ڈیزائن','ڈیزائنز','کلیکشن','تھری پیس','تین پیس'];
+const BROWSE_WORDS = ['show','shown','show me','display','available','availability','catalogue','catalog','pics','pic','picture','pictures','photo','photos','image','images','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','hai kya','hain kya','chahiye','kuch hai','kuch dikh','available hai','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں','تصویر','تصاویر','فوٹو','پکس','دستیاب','موجود','کچھ ہے','کچھ دکھ'];
+const VISUAL_WORDS = ['design','designs','dress','dresses','collection','3 piece','3-piece','three piece','ڈیزائن','ڈیزائنز','ڈریس','ڈریسس','کلیکشن','تھری پیس','تین پیس','نمونہ','نمونے'];
 const COMPLETE_CATALOGUE_WORDS = ['complete catalogue','full catalogue','whole catalogue','all catalogue','complete catalog','full catalog','whole catalog','all catalog','poora catalogue','pura catalogue','sara catalogue','saara catalogue','poora catalog','pura catalog','sara catalog','saara catalog','پورا کیٹلاگ','مکمل کیٹلاگ','سارا کیٹلاگ','تمام کیٹلاگ','پورا کتالوگ','مکمل کتالوگ'];
 const ORDER_WORDS = ['order','book','booking','buy','purchase','place order','order kar','order laga','آرڈر','منگوانا','خریدنا','بک','بکنگ'];
 const FABRIC_ALIASES = [['lawn','Lawn'],['لان','Lawn'],['linen','Linen'],['لینن','Linen'],['khaddar','Khaddar'],['کھدر','Khaddar'],['karandi','Karandi'],['کرندی','Karandi'],['marina','Marina'],['marena','Marina'],['مارینہ','Marina'],['مرینہ','Marina'],['velvet','Velvet'],['ویلویٹ','Velvet'],['ویلٹ','Velvet'],['dhanak','Dhanak'],['دھنک','Dhanak'],['kotail','Kotail'],['kotai','Kotail'],['کوٹیل','Kotail']];
@@ -27,9 +28,9 @@ function wantsCatalogueImages(text) {
   const product=hasAny(t,PRODUCT_WORDS);
   const imageWords=['pics','pic','picture','pictures','photo','photos','image','images','تصویر','تصاویر','فوٹو','پکس'];
   const visualVerbs=['show','shown','show me','display','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','کچھ دکھ','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں'];
-  return hasAny(t,imageWords) || (product && hasAny(t,visualVerbs));
+  return hasAny(t,imageWords) || hasAny(t,VISUAL_WORDS) || (product && hasAny(t,visualVerbs));
 }
-function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:isCompleteCatalogueRequest(t) ? 50 : 5}; }
+function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:isCompleteCatalogueRequest(t) ? 50 : 50}; }
 function money(row) { const value=Number(row?.price); return Number.isFinite(value) ? `${row?.currency||'PKR'} ${value.toLocaleString('en-PK')}` : `${row?.currency||'PKR'} ${row?.price??''}`.trim(); }
 function normalizeImageUrl(value) {
   if (typeof value !== 'string') return '';
