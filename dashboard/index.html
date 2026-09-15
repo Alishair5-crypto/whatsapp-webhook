@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Zara AI — Sales Command Center</title>
+  <meta name="description" content="Zara AI sales command center for WhatsApp sales, orders and analytics.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/dashboard/dashboard.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-mark">Z</div><div><strong>ZARA AI</strong><span>Sales Command Center</span></div></div>
+      <div class="workspace"><span class="status-dot"></span><div><b>Fatima Arts</b><small>Production workspace</small></div><button aria-label="Workspace menu">•••</button></div>
+      <nav>
+        <a class="active" data-section="dashboard">⌂ <span>Dashboard</span></a>
+        <a data-section="leads">◉ <span>Lead Management</span><em id="leadBadge">0</em></a>
+        <a data-section="chat">◌ <span>WhatsApp Inbox</span><em id="unreadBadge">0</em></a>
+        <a data-section="products">▦ <span>Product Catalog</span></a>
+        <a data-section="orders">▤ <span>Orders & Invoices</span></a>
+        <a data-section="analytics">◒ <span>Sales Analytics</span></a>
+        <a data-section="pitch">✦ <span>Sales Pitches</span></a>
+        <a data-section="settings">⚙ <span>Settings</span></a>
+      </nav>
+      <div class="agent-card"><div class="agent-avatar">Z</div><div><b>Zara is active</b><small>WhatsApp AI Sales Agent</small></div><span class="live-pill">LIVE</span></div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="mobile-menu" id="menuToggle">☰</button>
+        <div><p class="eyebrow">SALES COMMAND CENTER</p><h1 id="pageTitle">Dashboard</h1></div>
+        <div class="top-actions"><div class="live-status"><span class="status-dot"></span><span id="connectionText">Checking connection…</span></div><button class="icon-btn" id="refreshBtn" title="Refresh">↻</button><div class="profile">M<span>Owner</span></div></div>
+      </header>
+
+      <section class="page active" id="sec-dashboard">
+        <div class="hero-row"><div><h2>Good evening. <span>Zara is ready.</span></h2><p>Your sales operation at a glance — without touching Zara's live AI brain.</p></div><button class="primary" data-section-jump="chat">Open WhatsApp Inbox →</button></div>
+        <div class="metrics" id="metrics">
+          <article><span>Orders</span><strong id="statOrders">—</strong><small id="statOrdersTrend">Live Google Sheets</small></article>
+          <article><span>Sales Value</span><strong id="statRevenue">—</strong><small>Confirmed order totals</small></article>
+          <article><span>Avg. Order</span><strong id="statAov">—</strong><small>Per saved order</small></article>
+          <article><span>AI Status</span><strong class="success-text">ONLINE</strong><small>WhatsApp webhook active</small></article>
+        </div>
+        <div class="grid-main">
+          <article class="panel large"><div class="panel-head"><div><h3>Order performance</h3><p>Saved orders from the production Orders sheet</p></div><select id="rangeSelect"><option>All available</option></select></div><div class="chart" id="orderChart"><div class="chart-empty">Waiting for live order history…</div></div></article>
+          <article class="panel"><div class="panel-head"><div><h3>Zara AI control</h3><p>Operational status</p></div><span class="green-dot"></span></div><div class="control-list"><div><span>WhatsApp</span><b id="waState">Connected</b></div><div><span>AI replies</span><b>Active</b></div><div><span>Voice notes</span><b>Supported</b></div><div><span>Languages</span><b>Urdu · Roman Urdu · English</b></div><div><span>Order sync</span><b id="syncState">Monitoring</b></div></div><div class="confidence"><div><span>AI operating mode</span><b>Autonomous sales</b></div><div class="bar"><i></i></div></div></article>
+        </div>
+        <div class="grid-main lower"><article class="panel"><div class="panel-head"><div><h3>Recent orders</h3><p>Exact production sheet data</p></div><button class="ghost" data-section-jump="orders">View all</button></div><div class="table-wrap"><table><thead><tr><th>Order ID</th><th>Customer</th><th>Product</th><th>Total</th><th>Status</th></tr></thead><tbody id="recentOrders"><tr><td colspan="5" class="empty">Loading live orders…</td></tr></tbody></table></div></article><article class="panel"><div class="panel-head"><div><h3>Sales funnel</h3><p>Dashboard framework</p></div></div><div class="funnel"><div><span>New conversations</span><b>Live inbox</b></div><div><span>Qualified leads</span><b>AI detected</b></div><div><span>Orders</span><b id="funnelOrders">—</b></div><div><span>Revenue</span><b id="funnelRevenue">—</b></div></div></article></div>
+      </section>
+
+      <section class="page" id="sec-leads"><div class="section-title"><div><p class="eyebrow">CRM</p><h2>Lead Management</h2><p>Lead intelligence remains separate from Zara's conversation engine.</p></div></div><div class="empty-state"><div>◉</div><h3>Live lead intelligence</h3><p>Connect your lead source to populate this module. No fake customers are shown.</p></div></section>
+      <section class="page" id="sec-chat"><div class="section-title"><div><p class="eyebrow">WHATSAPP</p><h2>WhatsApp Inbox</h2><p>Live conversation surface for Zara and human takeover.</p></div><span class="badge green">ZARA ACTIVE</span></div><div class="chat-layout"><div class="chat-list"><div class="search">⌕ <input id="chatSearch" placeholder="Search conversations"></div><div class="empty-chat">Live conversation feed is not exposed by the current webhook API. Zara itself remains untouched and active.</div></div><div class="chat-preview"><div class="chat-top"><div class="agent-avatar">Z</div><div><b>Zara AI</b><small>WhatsApp Sales Agent</small></div><span class="badge green">ONLINE</span></div><div class="chat-body"><div class="system-note">Dashboard is intentionally read-only here. This prevents the dashboard from interfering with production WhatsApp messages.</div></div></div></div></section>
+      <section class="page" id="sec-products"><div class="section-title"><div><p class="eyebrow">CATALOG</p><h2>Product Catalog</h2><p>Product catalogue remains owned by the existing Zara catalogue pipeline.</p></div></div><div class="empty-state"><div>▦</div><h3>Production catalogue connection</h3><p>The existing catalogue/media endpoint is preserved. A dedicated read API can be connected next without changing Zara.</p></div></section>
+      <section class="page" id="sec-orders"><div class="section-title"><div><p class="eyebrow">ORDERS</p><h2>Orders & Invoices</h2><p>12-column production Orders sheet view.</p></div><button class="primary" id="ordersRefresh">Refresh orders</button></div><article class="panel"><div class="table-wrap"><table><thead><tr><th>Order ID</th><th>Date</th><th>Customer</th><th>Contact</th><th>Product</th><th>Qty</th><th>Size</th><th>Color</th><th>Total</th><th>Address</th><th>Payment</th><th>Status</th></tr></thead><tbody id="ordersTable"><tr><td colspan="12" class="empty">Loading…</td></tr></tbody></table></div></article></section>
+      <section class="page" id="sec-analytics"><div class="section-title"><div><p class="eyebrow">INSIGHTS</p><h2>Sales Analytics</h2><p>Calculated from real saved Orders data.</p></div></div><div class="metrics"><article><span>Total orders</span><strong id="aOrders">—</strong></article><article><span>Total sales</span><strong id="aRevenue">—</strong></article><article><span>Average order</span><strong id="aAov">—</strong></article><article><span>Pending</span><strong id="aPending">—</strong></article></div><article class="panel analytics-panel"><div class="panel-head"><div><h3>Product performance</h3><p>Ranked by saved order value</p></div></div><div id="productPerformance" class="rank-list"><div class="empty">Loading…</div></div></article></section>
+      <section class="page" id="sec-pitch"><div class="section-title"><div><p class="eyebrow">CONVERSION</p><h2>Sales Pitches</h2><p>Keep approved sales messaging in one controlled workspace.</p></div></div><div class="pitch-grid"><article class="pitch-card"><span>01 · FABRIC</span><h3>Premium Lawn</h3><p>Position feel, season and occasion first. Price only when asked.</p></article><article class="pitch-card"><span>02 · WHOLESALE</span><h3>10+ Suits</h3><p>Surface the wholesale opportunity naturally when the customer qualifies.</p></article><article class="pitch-card"><span>03 · TRUST</span><h3>First Order</h3><p>Reassure without over-selling. Zara handles the conversation.</p></article></div></section>
+      <section class="page" id="sec-settings"><div class="section-title"><div><p class="eyebrow">SYSTEM</p><h2>Settings</h2><p>Production safeguards and integration status.</p></div></div><div class="settings-grid"><article class="panel setting"><span>WhatsApp</span><b class="success-text">Production webhook</b><small>Zara's existing message path is unchanged.</small></article><article class="panel setting"><span>Google Sheets</span><b class="success-text" id="sheetStatus">Connected / checking</b><small>Orders use the production 12-column schema.</small></article><article class="panel setting"><span>AI brain</span><b class="success-text">Protected</b><small>No dashboard code modifies Zara's system prompt, memory or media logic.</small></article><article class="panel setting"><span>Order persistence</span><b class="success-text">Protected</b><small>Order save remains on the existing production path.</small></article></div></section>
+      <div class="toast" id="toast"></div>
+    </main>
+  </div>
+  <script src="/dashboard/dashboard.js"></script>
+</body>
+</html>
