@@ -2,7 +2,7 @@
   "version": 2,
   "builds": [
     {
-      "src": "api/safe-index.js",
+      "src": "api/sheet-order-fix.js",
       "use": "@vercel/node"
     },
     {
@@ -17,7 +17,7 @@
     },
     {
       "src": "/(.*)",
-      "dest": "api/safe-index.js"
+      "dest": "api/sheet-order-fix.js"
     }
   ]
 }
