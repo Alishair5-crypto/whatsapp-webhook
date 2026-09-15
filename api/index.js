@@ -70,9 +70,10 @@ async function recoverConfirmedOrder(ctx) {
     const token = await getServiceAccountToken(process.env.GOOGLE_SA_EMAIL.trim(), process.env.GOOGLE_SA_KEY.trim()); if (!token) return null;
     const row = [new Date().toLocaleString('en-PK', { timeZone: 'Asia/Karachi' }), order.name, ctx.phone, order.product, order.qty, order.price, order.payment, order.address, order.city, 'Pending'];
     const sheetUrl = `https://sheets.googleapis.com/v4/spreadsheets/${process.env.GOOGLE_SHEETS_ID.trim()}/values/Sheet1!A:J:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
-    const appendResponse = await fetchGoogleSheetsWithRetry(sheetUrl, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: [row] }) }, null);
+    const appendResponse = await fetchGoogleSheetsWithRetry(sheetUrl, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ values: [row] }) }, ctx);
     const result = await appendResponse.json().catch(() => null);
     if (Number(result?.updates?.updatedRows || 0) < 1) { console.error('[ORDER RECOVERY] Sheets returned no updated row'); return null; }
+    ctx.orderSheetWriteSucceeded = true;
     console.log('[ORDER RECOVERY] Confirmed order saved to Google Sheets:', order.name, order.product, order.qty); return order;
   } catch (error) { console.error('[ORDER RECOVERY] Failed:', error.message); return null; }
 }
@@ -115,8 +116,21 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
     if (isWhatsAppSend(url) && typeof init.body === 'string') {
       try {
         const payload = JSON.parse(init.body);
-        if (payload?.type === 'text' && typeof payload?.text?.body === 'string') { payload.text.body = normalizeUrduText(payload.text.body); if (ctx) ctx.aiReply = payload.text.body; const response = await originalFetch(input, { ...init, headers, body: JSON.stringify(payload) }); if (response.ok) { await maybeRemember(ctx); await recoverConfirmedOrder(ctx); await sendCatalogueImages(ctx, headers); } return response; }
-        if (payload?.type === 'audio' && ctx?.aiReply) { const response = await originalFetch(input, { ...init, headers }); if (response.ok) { await maybeRemember(ctx); await recoverConfirmedOrder(ctx); await sendCatalogueImages(ctx, headers); } return response; }
+        if (payload?.type === 'text' && typeof payload?.text?.body === 'string') {
+          payload.text.body = normalizeUrduText(payload.text.body); if (ctx) ctx.aiReply = payload.text.body;
+          // Order persistence is independent of WhatsApp delivery. If the primary [ORDER]
+          // tag save failed, recover from the current customer message + Zara reply + memory
+          // BEFORE attempting to send the reply. A WhatsApp send failure must never prevent
+          // a confirmed order from being persisted.
+          await recoverConfirmedOrder(ctx);
+          const response = await originalFetch(input, { ...init, headers, body: JSON.stringify(payload) });
+          if (response.ok) { await maybeRemember(ctx); await sendCatalogueImages(ctx, headers); } return response;
+        }
+        if (payload?.type === 'audio' && ctx?.aiReply) {
+          await recoverConfirmedOrder(ctx);
+          const response = await originalFetch(input, { ...init, headers });
+          if (response.ok) { await maybeRemember(ctx); await sendCatalogueImages(ctx, headers); } return response;
+        }
       } catch (_) {}
     }
     return originalFetch(input, init);
