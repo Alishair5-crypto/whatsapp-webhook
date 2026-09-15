@@ -1,39 +1,17 @@
 {
   "version": 2,
   "builds": [
-    {
-      "src": "api/sheet-order-fix.js",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "api/catalogue-images.js",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "api/dashboard-data.js",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "api/dashboard.js",
-      "use": "@vercel/node"
-    }
+    {"src": "api/sheet-order-fix.js", "use": "@vercel/node"},
+    {"src": "api/catalogue-images.js", "use": "@vercel/node"},
+    {"src": "api/dashboard-data.js", "use": "@vercel/node"},
+    {"src": "api/dashboard-live.js", "use": "@vercel/node"},
+    {"src": "api/dashboard.js", "use": "@vercel/node"}
   ],
   "routes": [
-    {
-      "src": "/api/catalogue-images",
-      "dest": "api/catalogue-images.js"
-    },
-    {
-      "src": "/api/dashboard-data",
-      "dest": "api/dashboard-data.js"
-    },
-    {
-      "src": "/dashboard(?:/.*)?",
-      "dest": "api/dashboard.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "api/sheet-order-fix.js"
-    }
+    {"src": "/api/catalogue-images", "dest": "api/catalogue-images.js"},
+    {"src": "/api/dashboard-data", "dest": "api/dashboard-data.js"},
+    {"src": "/api/dashboard-live", "dest": "api/dashboard-live.js"},
+    {"src": "/dashboard(?:/.*)?", "dest": "api/dashboard.js"},
+    {"src": "/(.*)", "dest": "api/sheet-order-fix.js"}
   ]
 }
