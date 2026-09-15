@@ -6,13 +6,13 @@ const { searchCatalogue } = require('./catalogue');
 // 1. This module controls ONLY catalogue lookup/image-request interpretation.
 // 2. Existing Zara AI reasoning, memory, orders, payments, delivery, TTS, WhatsApp and DB logic are untouched.
 // 3. Current customer message has priority over previous catalogue context.
-// 4. Previous image context may resolve references such as "aur dikhao" but may NEVER override a new order/payment/address intent.
-// 5. Image quantity is interpreted from the current request: explicit number > singular/plural wording > default multiple batch.
-// 6. Singular image nouns mean one: tasveer, image, picture, pic, design.
-// 7. Plural image nouns mean multiple: tasveeren/tasveerain, images, pictures, pics, designs.
-// 8. "aur tasveer" means additional images; default additional batch is 5 unless an explicit count is given.
+// 4. Previous image context may resolve additional-browse language, but must never override a new order/payment/address intent.
+// 5. Image quantity: explicit number > singular/plural wording > default multiple batch.
+// 6. Singular: tasveer, image, picture, pic, photo, design.
+// 7. Plural: tasveeren/tasveerain, images, pictures, pics, photos, designs.
+// 8. "aur tasveer" means additional images; default additional batch is 5 unless a number is given.
 // 9. Never invent products, prices, stock or image URLs.
-// 10. Keep verified HTTPS image URL validation unchanged.
+// 10. Verified HTTPS image URL validation remains unchanged.
 const PRODUCT_WORDS = ['lawn','linen','khaddar','karandi','marina','marena','velvet','dhanak','kotail','embroidered','embroidery','printed','fabric','suit','suits','dress','dresses','design','designs','collection','3 piece','3-piece','three piece','لان','لینن','کھدر','کرندی','مرینہ','مارینہ','ویلویٹ','ویلٹ','دھنک','کوٹیل','کڑھائی','پرنٹ','سوٹ','کپڑا','کپڑے','ڈریس','ڈریسس','ڈیزائن','ڈیزائنز','کلیکشن','تھری پیس','تین پیس'];
 const BROWSE_WORDS = ['show','shown','show me','display','available','availability','catalogue','catalog','pics','pic','picture','pictures','photo','photos','image','images','tasveer','tasveerain','tasveeren','tasaveer','tasaveers','taseer','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','hai kya','hain kya','kuch hai','kuch dikh','available hai','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں','تصویر','تصاویر','فوٹو','پکس','دستیاب','موجود','کچھ ہے','کچھ دکھ'];
 const VISUAL_WORDS = ['design','designs','dress','dresses','collection','3 piece','3-piece','three piece','tasveer','tasveerain','tasveeren','tasaveer','tasaveers','picture','pictures','photo','photos','image','images','pic','pics','ڈیزائن','ڈیزائنز','ڈریس','ڈریسس','کلیکشن','تھری پیس','تین پیس','نمونہ','نمونے','تصویر','تصاویر','فوٹو','پکس'];
@@ -44,39 +44,36 @@ function isOrderIntent(text) {
     || /(?:naam|name).*(?:address|pata|city|shehar)/.test(t);
 }
 
-function isCatalogueIntent(text) {
-  const t = normalizeText(text); if (!t) return false;
-  const product = hasAny(t, PRODUCT_WORDS), browse = hasAny(t, BROWSE_WORDS);
-  if (isOrderIntent(t)) return false;
-  if (browse) return true;
-  if (product && /\?|\b(price|rate|kitna|kitni|hai|hain|chahiye|available|konsa|kaunsa|which|what)\b/.test(t)) return true;
-  return false;
-}
-
 function extractRequestedImageCount(text) {
   const t = normalizeText(text);
   if (!t) return 0;
   if (isCompleteCatalogueRequest(t)) return 50;
-
-  // Explicit numeric request always wins, including "5 tasveer", "send 3 pics", "2 designs".
   const explicit = t.match(/\b(\d{1,2})\b/);
   if (explicit) {
     const count = Number(explicit[1]);
     if (count >= 1 && count <= 50 && (hasAny(t, IMAGE_SINGULAR_WORDS) || hasAny(t, IMAGE_PLURAL_WORDS) || hasAny(t, ['send','bhej','dikhao','dikh','show','aur','more']))) return count;
   }
-
-  // "aur tasveer" is semantically an additional-image request, not a single-image request.
   if (/\b(?:aur|more|another|some more|kuch aur)\b/.test(t) && (hasAny(t, IMAGE_SINGULAR_WORDS) || hasAny(t, IMAGE_PLURAL_WORDS))) return 5;
-
   if (hasAny(t, IMAGE_PLURAL_WORDS)) return 5;
   if (hasAny(t, IMAGE_SINGULAR_WORDS)) return 1;
-
   return 0;
 }
 
 function wantsCatalogueImages(text) {
   const t = normalizeText(text); if (!t || isOrderIntent(t)) return false;
-  return isCompleteCatalogueRequest(t) || extractRequestedImageCount(t) > 0 || (hasAny(t, PRODUCT_WORDS) && hasAny(t, ['show','shown','display','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں']));
+  if (isCompleteCatalogueRequest(t)) return true;
+  if (extractRequestedImageCount(t) > 0) return true;
+  const moreBrowse = /\b(?:aur|more|another|kuch aur)\b/.test(t) && hasAny(t, ['show','shown','display','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں']);
+  if (moreBrowse) return true;
+  return hasAny(t, PRODUCT_WORDS) && hasAny(t, ['show','shown','display','dikhao','dikha','dikhain','dikhaye','dekhna','dekhao','dekhain','dekhaye','دکھاؤ','دکھائیں','دکھا','دیکھنا','دیکھائیں']);
+}
+
+function isCatalogueIntent(text) {
+  const t = normalizeText(text); if (!t || isOrderIntent(t)) return false;
+  const product = hasAny(t, PRODUCT_WORDS), browse = hasAny(t, BROWSE_WORDS);
+  if (browse || wantsCatalogueImages(t)) return true;
+  if (product && /\?|\b(price|rate|kitna|kitni|hai|hain|chahiye|available|konsa|kaunsa|which|what)\b/.test(t)) return true;
+  return false;
 }
 
 function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:50}; }
@@ -106,7 +103,6 @@ function buildContext(rows,filters) {
   const lines=rows.map((p,i)=>`${i+1}. ${p.name} | ${p.collection||'N/A'} | ${p.fabric||'N/A'} | ${p.color||'N/A'} | ${money(p)} | ${p.inventory_verified ? `stock ${p.stock_quantity}` : 'stock NOT VERIFIED'}${p.description?` | ${String(p.description).slice(0,180)}`:''}`);
   return `\n\n=== LIVE CATALOGUE RESULT (DATABASE — AUTHORITATIVE) ===\nUse ONLY these live catalogue records for product facts. Never invent product names, prices, colors, stock, or images. ${imageInstruction}\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
 }
-
 function prepareImageLimitedProducts(products, requestedCount) {
   if (!Array.isArray(products) || !products.length || !requestedCount || requestedCount >= 50) return products;
   const out = []; let remaining = requestedCount;
@@ -120,7 +116,6 @@ function prepareImageLimitedProducts(products, requestedCount) {
   }
   return out;
 }
-
 async function getCatalogueForMessage(dbUrl,text) {
   if(!isCatalogueIntent(text)) return null;
   try {
@@ -135,5 +130,4 @@ async function getCatalogueForMessage(dbUrl,text) {
     return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n',wantsImages:false,requestedImageCount:0,completeCatalogue:false};
   }
 }
-
 module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,isOrderIntent,extractRequestedImageCount,extractFilters,getCatalogueForMessage,primaryImage,allImages,normalizeImageUrl,isCompleteCatalogueRequest,buildContext};
