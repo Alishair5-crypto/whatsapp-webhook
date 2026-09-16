@@ -7,6 +7,7 @@
     {"src": "api/dashboard-data.js", "use": "@vercel/node"},
     {"src": "api/dashboard-live.js", "use": "@vercel/node"},
     {"src": "api/human-chat.js", "use": "@vercel/node"},
+    {"src": "api/dashboard-auth.js", "use": "@vercel/node"},
     {"src": "api/dashboard.js", "use": "@vercel/node"}
   ],
   "routes": [
@@ -14,6 +15,7 @@
     {"src": "/api/dashboard-data", "dest": "api/dashboard-data.js"},
     {"src": "/api/dashboard-live", "dest": "api/dashboard-live.js"},
     {"src": "/api/human-chat", "dest": "api/human-chat.js"},
+    {"src": "/api/dashboard-auth", "dest": "api/dashboard-auth.js"},
     {"src": "/dashboard(?:/.*)?", "dest": "api/dashboard.js"},
     {"src": "/(.*)", "dest": "api/whatsapp-router.js"}
   ]
