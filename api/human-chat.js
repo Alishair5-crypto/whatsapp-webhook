@@ -1,0 +1,30 @@
+'use strict';
+const {isHuman,setHuman,getConversation,saveConversation}=require('../lib/human-control');
+const TOKEN=()=>String(process.env.WHATSAPP_TOKEN||'').trim();
+const PHONE_ID=()=>String(process.env.PHONE_NUMBER_ID||'').trim();
+const clean=v=>String(v??'').replace(/[\u0000-\u001F\u007F]/g,' ').trim().slice(0,4000);
+module.exports=async(req,res)=>{
+ try{
+  if(req.method==='GET'){
+   const phone=clean(new URL(req.url,'http://localhost').searchParams.get('phone'));
+   if(!phone)return res.status(400).json({ok:false,error:'phone is required'});
+   const [human,conversation]=await Promise.all([isHuman(phone),getConversation(phone)]);
+   return res.status(200).json({ok:true,phone,humanActive:human,conversation:conversation?{phone:conversation.phone_number,name:conversation.customer_name||phone,history:Array.isArray(conversation.history)?conversation.history:[],lastSeen:conversation.last_seen}:null});
+  }
+  let body=req.body;if(typeof body==='string')body=JSON.parse(body||'{}');
+  if(req.method==='POST'){
+   const action=clean(body?.action);const phone=clean(body?.phone);if(!phone)return res.status(400).json({ok:false,error:'phone is required'});
+   if(action==='takeover'||action==='resume_ai'){const active=action==='takeover';await setHuman(phone,active);return res.status(200).json({ok:true,humanActive:active});}
+   if(action==='send'){
+    const text=clean(body?.text);if(!text)return res.status(400).json({ok:false,error:'text is required'});
+    if(!(await isHuman(phone)))return res.status(409).json({ok:false,error:'Human takeover is not active'});
+    const token=TOKEN(),phoneId=PHONE_ID();if(!token||!phoneId)return res.status(500).json({ok:false,error:'WhatsApp credentials are not configured'});
+    const r=await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:phone,type:'text',text:{preview_url:false,body:text}})});
+    if(!r.ok)return res.status(502).json({ok:false,error:'WhatsApp send failed',detail:(await r.text()).slice(0,300)});
+    const old=await getConversation(phone);const history=Array.isArray(old?.history)?old.history:[];history.push({role:'model',parts:[{text:`[Human] ${text}`}]});await saveConversation(phone,old?.customer_name||'',history);return res.status(200).json({ok:true,sent:true});
+   }
+   return res.status(400).json({ok:false,error:'Unknown action'});
+  }
+  return res.status(405).json({ok:false,error:'Method Not Allowed'});
+ }catch(e){console.error('[HUMAN CHAT]',e.message);return res.status(500).json({ok:false,error:'Human chat operation failed'});}
+};
