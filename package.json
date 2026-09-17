@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
-    "@vercel/blob": "^2.8.0"
+    "@vercel/blob": "^2.8.0",
+    "@vercel/functions": "^3.0.0"
   },
   "engines": {
     "node": ">=18"
