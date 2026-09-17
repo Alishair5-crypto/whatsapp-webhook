@@ -3,6 +3,7 @@
   "builds": [
     {"src": "api/sheet-order-fix.js", "use": "@vercel/node"},
     {"src": "api/whatsapp-router.js", "use": "@vercel/node"},
+    {"src": "api/zara-followups.js", "use": "@vercel/node"},
     {"src": "api/catalogue-images.js", "use": "@vercel/node"},
     {"src": "api/dashboard-data.js", "use": "@vercel/node"},
     {"src": "api/dashboard-live.js", "use": "@vercel/node"},
@@ -16,6 +17,7 @@
     {"src": "/api/dashboard-live", "dest": "api/dashboard-live.js"},
     {"src": "/api/human-chat", "dest": "api/human-chat.js"},
     {"src": "/api/dashboard-auth", "dest": "api/dashboard-auth.js"},
+    {"src": "/api/zara-followups", "dest": "api/zara-followups.js"},
     {"src": "/dashboard(?:/.*)?", "dest": "api/dashboard.js"},
     {"src": "/(.*)", "dest": "api/whatsapp-router.js"}
   ]
