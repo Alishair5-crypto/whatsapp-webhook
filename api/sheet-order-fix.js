@@ -2,9 +2,9 @@
 // Keeps the existing AI, memory, WhatsApp, voice and catalogue flow unchanged.
 // 1) Normalizes legacy A:J order writes into the actual A:L Orders schema.
 // 2) Uses GOOGLE_SHEETS_ID instead of silently forcing a different spreadsheet.
-// 3) Logs the final Zara text reply.
+// 3) Logs the final Zara reply transcript.
 // 4) Hard-bans garment-size claims because Fatima Arts products are unstitched.
-// 5) Records the Zara reply for the targeted unfinished-chat follow-up timer.
+// 5) Records Zara replies for the targeted unfinished-chat follow-up timer.
 const crypto = require('node:crypto');
 const { waitUntil } = require('@vercel/functions');
 const { recordZaraReply } = require('../lib/followup-store');
@@ -13,13 +13,13 @@ const TARGET_SHEET_ID = String(process.env.GOOGLE_SHEETS_ID || '1JTMYJsWj2ZgMBKl
 const SHEETS_HOST = 'sheets.googleapis.com';
 const legacyAppend = /https:\/\/sheets\.googleapis\.com\/v4\/spreadsheets\/[^/]+\/values\/Sheet1!A:J:append(?:\?|$)/i;
 const whatsappSend = /graph\.facebook\.com\/v\d+\.\d+\/\d+\/messages(?:\?|$)/i;
+const elevenLabsTTS = /api\.elevenlabs\.io\/v1\/text-to-speech\//i;
 
 const originalFetch = globalThis.fetch;
 
 function makeOrderId(row) {
   const stable = [row?.[1], row?.[2], row?.[3], row?.[4], row?.[5], row?.[6], row?.[7], row?.[8]]
-    .map(v => String(v ?? '').trim().toLowerCase())
-    .join('|');
+    .map(v => String(v ?? '').trim().toLowerCase()).join('|');
   const digest = crypto.createHash('sha256').update(stable).digest('hex').slice(0, 10).toUpperCase();
   return `FA-${digest}`;
 }
@@ -38,15 +38,9 @@ function convertRow(row) {
   const status = row[9] || 'Pending';
   const fullAddress = [String(address).trim(), String(city).trim()].filter(Boolean).join(', ');
   const totalAmount = qty > 0 && unitPrice > 0 ? qty * unitPrice : unitPrice;
-
-  // Actual Orders sheet:
-  // A Order ID | B Date | C Customer Name | D Contact Number | E Product Name
-  // F Quantity | G Size | H Color | I Total Amount | J Address | K Payment Method | L Status
   return [
     makeOrderId(row), date, name, phone, product, qty || row[4] || '',
-    '', // Size — all Fatima Arts products are unstitched.
-    '', // Color — legacy order tag does not contain confirmed color.
-    totalAmount, fullAddress, payment, status
+    '', '', totalAmount, fullAddress, payment, status
   ];
 }
 
@@ -60,12 +54,8 @@ function targetUrl(url) {
 function sanitizeZaraReply(text) {
   let out = String(text || '').trim();
   if (!out) return out;
-
-  // Fatima Arts is unstitched fabric. Do not allow Zara to claim garment sizes,
-  // recommend a size, or invent measurements. This is a final outbound guard.
   const sizePattern = /(?:\b(?:size|sizes|small|medium|large|extra\s*large|xl|xxl|s|m|l)\b|سائز|سائزز|چھوٹا سائز|درمیانہ سائز|بڑا سائز|سائز چارٹ|measurement|measurements|ماپ|پیمائش)/i;
   if (!sizePattern.test(out)) return out;
-
   const sentences = out.split(/(?<=[.!?۔؟])\s+/).filter(Boolean);
   const kept = sentences.filter(sentence => !sizePattern.test(sentence));
   const guard = 'یہ تمام فیبرک unstitched ہیں، اس لیے garment size applicable نہیں ہے۔';
@@ -92,6 +82,18 @@ globalThis.fetch = async (input, init = {}) => {
     }
   }
 
+  // Final outbound voice guard: sanitize the exact text before ElevenLabs and
+  // therefore also before the existing Azure fallback receives it.
+  if (url && elevenLabsTTS && typeof init.body === 'string') {
+    let payload = null;
+    try { payload = JSON.parse(init.body); } catch (_) {}
+    if (payload && typeof payload.text === 'string') {
+      payload.text = sanitizeZaraReply(payload.text);
+      console.log('[ZARA REPLY]', payload.text);
+      return originalFetch(input, { ...init, body: JSON.stringify(payload) });
+    }
+  }
+
   if (url && whatsappSend && typeof init.body === 'string' && String(init?.method || 'POST').toUpperCase() === 'POST') {
     let payload = null;
     try { payload = JSON.parse(init.body); } catch (_) {}
@@ -101,11 +103,8 @@ globalThis.fetch = async (input, init = {}) => {
       payload.text.body = sanitizeZaraReply(payload.text.body);
       console.log('[ZARA REPLY]', payload.text.body);
       const response = await originalFetch(input, { ...init, body: JSON.stringify(payload) });
-      if (response.ok) {
-        waitUntil(recordZaraReply(phone, '', payload.text.body));
-      } else {
-        console.error('[ZARA REPLY SEND FAIL]', response.status);
-      }
+      if (response.ok) waitUntil(recordZaraReply(phone, '', payload.text.body));
+      else console.error('[ZARA REPLY SEND FAIL]', response.status);
       return response;
     }
 
