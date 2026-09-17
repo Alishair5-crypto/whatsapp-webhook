@@ -1,0 +1,22 @@
+name: Zara Follow-ups
+
+on:
+  schedule:
+    - cron: '7,17,27,37,47,57 * * * *'
+  workflow_dispatch:
+
+jobs:
+  followups:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Zara follow-up worker
+        env:
+          ZARA_FOLLOWUP_URL: ${{ secrets.ZARA_FOLLOWUP_URL }}
+          CRON_SECRET: ${{ secrets.ZARA_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          test -n "$ZARA_FOLLOWUP_URL"
+          test -n "$CRON_SECRET"
+          curl --fail --silent --show-error \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$ZARA_FOLLOWUP_URL"
