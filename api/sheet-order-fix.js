@@ -14,6 +14,7 @@ const SHEETS_HOST = 'sheets.googleapis.com';
 const legacyAppend = /https:\/\/sheets\.googleapis\.com\/v4\/spreadsheets\/[^/]+\/values\/Sheet1!A:J:append(?:\?|$)/i;
 const whatsappSend = /graph\.facebook\.com\/v\d+\.\d+\/\d+\/messages(?:\?|$)/i;
 const elevenLabsTTS = /api\.elevenlabs\.io\/v1\/text-to-speech\//i;
+const azureTTS = /\.tts\.speech\.microsoft\.com\/cognitiveservices\/v1(?:\?|$)/i;
 
 const originalFetch = globalThis.fetch;
 
@@ -38,10 +39,7 @@ function convertRow(row) {
   const status = row[9] || 'Pending';
   const fullAddress = [String(address).trim(), String(city).trim()].filter(Boolean).join(', ');
   const totalAmount = qty > 0 && unitPrice > 0 ? qty * unitPrice : unitPrice;
-  return [
-    makeOrderId(row), date, name, phone, product, qty || row[4] || '',
-    '', '', totalAmount, fullAddress, payment, status
-  ];
+  return [makeOrderId(row), date, name, phone, product, qty || row[4] || '', '', '', totalAmount, fullAddress, payment, status];
 }
 
 function targetUrl(url) {
@@ -64,6 +62,10 @@ function sanitizeZaraReply(text) {
   return cleaned ? `${cleaned} ${guard}` : guard;
 }
 
+function escapeXml(text) {
+  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
 globalThis.fetch = async (input, init = {}) => {
   const url = typeof input === 'string' ? input : input?.url;
 
@@ -82,8 +84,7 @@ globalThis.fetch = async (input, init = {}) => {
     }
   }
 
-  // Final outbound voice guard: sanitize the exact text before ElevenLabs and
-  // therefore also before the existing Azure fallback receives it.
+  // Final outbound voice guard for the existing ElevenLabs path.
   if (url && elevenLabsTTS && typeof init.body === 'string') {
     let payload = null;
     try { payload = JSON.parse(init.body); } catch (_) {}
@@ -91,6 +92,19 @@ globalThis.fetch = async (input, init = {}) => {
       payload.text = sanitizeZaraReply(payload.text);
       console.log('[ZARA REPLY]', payload.text);
       return originalFetch(input, { ...init, body: JSON.stringify(payload) });
+    }
+  }
+
+  // The existing Azure fallback sends SSML directly, so sanitize the voice text here too.
+  if (url && azureTTS && typeof init.body === 'string') {
+    const body = String(init.body);
+    const match = body.match(/(<voice\b[^>]*>)([\s\S]*?)(<\/voice>)/i);
+    if (match) {
+      const rawText = match[2].replace(/<[^>]+>/g, '');
+      const safeText = sanitizeZaraReply(rawText);
+      const safeBody = body.replace(match[0], `${match[1]}${escapeXml(safeText)}${match[3]}`);
+      console.log('[ZARA REPLY]', safeText);
+      return originalFetch(input, { ...init, body: safeBody });
     }
   }
 
