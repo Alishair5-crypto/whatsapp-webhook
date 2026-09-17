@@ -15,6 +15,33 @@ function isElevenLabsTTS(url) { return url && url.includes('api.elevenlabs.io/v1
 function isWhatsAppSend(url) { return url && /graph\.facebook\.com\/v\d+\.\d+\//.test(url) && /\/messages(?:\?|$)/.test(url); }
 function isChatCompletion(url) { return url && /\/chat\/completions(?:\?|$)/.test(url); }
 function isGoogleSheetsAppend(url) { return url && /sheets\.googleapis\.com\/v4\/spreadsheets\/[^/]+\/values\/Sheet1!A:J:append(?:\?|$)/.test(url); }
+function escapeXml(text) { return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;'); }
+async function synthesizeWithAzure(text) {
+  const key = process.env.AZURE_SPEECH_KEY;
+  const region = process.env.AZURE_SPEECH_REGION;
+  if (!key || !region || !text) { console.warn('[AZURE TTS] Missing configuration or text; skipping fallback'); return null; }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const endpoint = `https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`;
+    const ssml = `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="ur-PK"><voice name="ur-PK-UzmaNeural">${escapeXml(text)}</voice></speak>`;
+    const response = await originalFetch(endpoint, { method: 'POST', headers: { 'Ocp-Apim-Subscription-Key': key, 'Content-Type': 'application/ssml+xml', 'X-Microsoft-OutputFormat': 'audio-24khz-160kbitrate-mono-mp3', 'User-Agent': 'Zara-AI-Sales-Agent' }, body: ssml, signal: controller.signal });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = (await response.clone().text()).slice(0, 1000); } catch (_) {}
+      console.error('[AZURE TTS FAIL]', JSON.stringify({ status: response.status, contentType: response.headers.get('content-type') || null, body: detail }));
+      return null;
+    }
+    console.log('[AZURE TTS SUCCESS] Fallback voice generated');
+    return response;
+  } catch (error) {
+    if (error?.name === 'AbortError') console.error('[AZURE TTS FAIL] Request timed out after 12000ms');
+    else console.error('[AZURE TTS FAIL]', error.message);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 async function fetchGoogleSheetsWithRetry(input, init = {}, ctx = null) {
   const maxAttempts = 3;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -91,7 +118,7 @@ async function injectMemoryIntoAI(url, init, ctx) {
 async function maybeRemember(ctx) { if (!ctx || ctx.remembered || !ctx.phone || !ctx.msgId || !ctx.userText || !ctx.aiReply) return; ctx.remembered = true; await remember(process.env.DATABASE_URL || '', ctx.phone, ctx.msgId, ctx.userText, ctx.aiReply, ctx.customerName); }
 function rotateProducts(products, phone) { if (!Array.isArray(products) || products.length < 2 || !phone) return products || []; const previous = catalogueRotation.get(phone) || 0; const offset = previous % products.length; catalogueRotation.set(phone, (offset + 1) % products.length); return products.slice(offset).concat(products.slice(0, offset)); }
 async function sendCatalogueImages(ctx, headers) {
-  if (!ctx?.catalogue?.wantsImages || !ctx?.catalogue?.products?.length || ctx.catalogueImagesSent) return;
+  if (!ctx?.catalogue?.wantsImages || !ctx.catalogue.products?.length || ctx.catalogueImagesSent) return;
   if (!ctx.phone || !process.env.WHATSAPP_TOKEN || !process.env.PHONE_NUMBER_ID) return;
   const products = rotateProducts(ctx.catalogue.products, ctx.phone); const selected = []; const urls = new Set();
   for (const product of products) { const productUrls = allImages(product); for (const url of productUrls) { if (!url || urls.has(url) || !/^https:\/\//i.test(url)) continue; urls.add(url); selected.push({ product, url }); } }
@@ -107,10 +134,18 @@ if (originalFetch && !globalThis.__zaraVoiceFetchPatched) {
     if (ctx && (isChatCompletion(url) || (url && url.includes('generativelanguage.googleapis.com')))) init = await injectMemoryIntoAI(url, init, ctx);
     if (isGoogleSheetsAppend(url)) { if (ctx) ctx.orderSheetWriteAttempted = true; try { return await fetchGoogleSheetsWithRetry(input, { ...init, headers }, ctx); } catch (error) { if (ctx) ctx.orderSheetWriteSucceeded = false; throw error; } }
     if (isElevenLabsTTS(url)) {
-      headers.set('Accept', 'audio/mpeg'); let body = init.body;
-      if (typeof body === 'string') { try { const payload = JSON.parse(body); payload.model_id = 'eleven_v3'; payload.language_code = 'ur'; if (typeof payload.text === 'string') { payload.text = normalizeUrdu(payload.text); if (ctx) ctx.aiReply = payload.text; } body = JSON.stringify(payload); } catch (_) {} }
+      headers.set('Accept', 'audio/mpeg'); let body = init.body; let elevenLabsText = '';
+      if (typeof body === 'string') { try { const payload = JSON.parse(body); payload.model_id = 'eleven_v3'; payload.language_code = 'ur'; if (typeof payload.text === 'string') { payload.text = normalizeUrdu(payload.text); elevenLabsText = payload.text; if (ctx) ctx.aiReply = payload.text; } body = JSON.stringify(payload); } catch (_) {} }
       const response = await originalFetch(input, { ...init, headers, body });
-      if (!response.ok) { try { const errorBody = await response.clone().text(); const requestId = response.headers.get('request-id') || response.headers.get('x-request-id') || null; console.error('[ELEVENLABS HTTP ERROR]', JSON.stringify({ status: response.status, contentType: response.headers.get('content-type') || null, requestId, body: errorBody.slice(0, 2000) })); } catch (e) { console.error('[ELEVENLABS HTTP ERROR] Failed to read error body:', e.message); } }
+      if (response.ok) return response;
+      try { const errorBody = await response.clone().text(); const requestId = response.headers.get('request-id') || response.headers.get('x-request-id') || null; console.error('[ELEVENLABS HTTP ERROR]', JSON.stringify({ status: response.status, contentType: response.headers.get('content-type') || null, requestId, body: errorBody.slice(0, 2000) })); } catch (e) { console.error('[ELEVENLABS HTTP ERROR] Failed to read error body:', e.message); }
+      if (elevenLabsText) {
+        console.warn('[AZURE TTS] ElevenLabs failed; attempting Azure fallback');
+        const azureResponse = await synthesizeWithAzure(elevenLabsText);
+        if (azureResponse?.ok) return azureResponse;
+      } else {
+        console.warn('[AZURE TTS] ElevenLabs failed but source text was unavailable; skipping Azure fallback');
+      }
       return response;
     }
     if (isWhatsAppSend(url) && typeof init.body === 'string') {
