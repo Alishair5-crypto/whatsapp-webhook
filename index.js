@@ -45,6 +45,7 @@
 //  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY — order logging
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
+const { confirmOrder } = require('./lib/order-service');
 
 let waitUntilFn = null;
 try { const vf = require('@vercel/functions'); if (vf?.waitUntil) waitUntilFn = vf.waitUntil; } catch (_) {}
@@ -662,15 +663,30 @@ Remember full conversation. Use context. Never repeat answered questions.
         const orderTag = parseOrderTag(aiReply);
         if (orderTag) {
           aiReply = aiReply.replace(/\[ORDER:[^\]]+\]/gi, '').trim();
-          const saveResult = await saveToSheet(
-            GOOGLE_SHEETS_ID,
-            GOOGLE_SA_EMAIL,
-            GOOGLE_SA_KEY,
-            orderTag,
-            fromNumber
-          );
-          if (!saveResult.ok && !saveResult.duplicate) {
-            console.error('[ORDER SAVE] Persistence not confirmed:', saveResult.reason);
+
+          // SINGLE ORDER AUTHORITY:
+          // Neon persistence must succeed before Zara can confirm the order.
+          // Google Sheets is downstream only and can never decide confirmation.
+          const neonResult = await confirmOrder(orderTag, fromNumber, 'zara-order-tag');
+          if (!neonResult.ok) {
+            console.error('[ORDER AUTHORITY] Neon persistence failed; confirmation blocked:', neonResult.reason);
+            aiReply = 'آپ کے آرڈر کی تفصیلات موصول ہو گئی ہیں، لیکن انہیں ابھی محفوظ کرنے میں عارضی مسئلہ آ گیا ہے۔ براہِ کرم ابھی دوبارہ ادائیگی نہ کریں۔ ہم آرڈر محفوظ ہونے کے بعد ہی تصدیق کریں گے۔ 🙏';
+          } else {
+            console.log('[ORDER AUTHORITY] Neon order persisted:', neonResult.id, neonResult.duplicate ? 'duplicate' : 'new');
+
+            // Downstream sync only. A Sheets failure does NOT undo a confirmed Neon order.
+            const sheetResult = await saveToSheet(
+              GOOGLE_SHEETS_ID,
+              GOOGLE_SA_EMAIL,
+              GOOGLE_SA_KEY,
+              orderTag,
+              fromNumber
+            );
+            if (!sheetResult.ok && !sheetResult.duplicate) {
+              console.error('[ORDER SHEETS SYNC] Downstream sync failed; Neon remains source of truth:', sheetResult.reason);
+            } else {
+              console.log('[ORDER SHEETS SYNC] Downstream sync accepted:', sheetResult.duplicate ? 'duplicate' : 'saved');
+            }
           }
         }
 
