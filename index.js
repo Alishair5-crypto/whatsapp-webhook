@@ -25,7 +25,7 @@
 //  [U20] Google Sheets order save via [ORDER:...] tag (hardened)
 //  [U21] System prompt multilingual — English instructions, default Urdu script
 //  [U22] Fallback messages in Urdu script (not Roman Urdu)
-//  [U23] Order persistence validation + Sheets status/retry + duplicate fingerprinting
+//  [U23] Order persistence validation + Apps Script Sheets sync + duplicate authority
 //
 //  VOICE LOGIC (same as working base — NOT changed):
 //  customer voice → Groq STT → Gemini → ElevenLabs → WhatsApp voice note
@@ -42,7 +42,7 @@
 //  CEREBRAS_API_KEY      — extra AI fallback (free)
 //  OPENROUTER_API_KEY    — extra AI fallback (free)
 //  DATABASE_URL           — Neon PostgreSQL (persistent memory across cold starts)
-//  GOOGLE_SHEETS_ID, GOOGLE_SA_EMAIL, GOOGLE_SA_KEY — order logging
+//  GOOGLE_SHEETS_WEBHOOK_URL — optional Apps Script Web App URL (existing URL has a safe fallback)
 // ─────────────────────────────────────────────────────────────────────────────
 const crypto = require('crypto');
 const { confirmOrder } = require('./lib/order-service');
@@ -193,73 +193,65 @@ function orderFingerprint(order, phone) {
 
 if (!global._savedOrderFingerprints) global._savedOrderFingerprints = new Map();
 
-async function saveToSheet(sid, email, key, order, phone) {
-  const normalized = normalizeOrder(order, phone);
-  if (!sid || !email || !key) {
-    console.warn('[ORDER SAVE] Not configured; order not persisted.');
+async function syncOrderToAppsScript(webhookUrl, orderId, order, phone) {
+  if (!webhookUrl) {
+    console.error('[ORDER SHEETS SYNC] Apps Script Web App URL is not configured.');
     return { ok:false, reason:'not_configured' };
   }
+
+  const normalized = normalizeOrder(order, phone);
   if (!normalized) {
-    console.error('[ORDER SAVE] Validation failed; refusing incomplete/invalid order.');
+    console.error('[ORDER SHEETS SYNC] Validation failed; refusing incomplete/invalid order.');
     return { ok:false, reason:'validation' };
   }
 
-  const fingerprint = orderFingerprint(normalized, phone);
-  const now = Date.now();
-  for (const [fp, expiresAt] of global._savedOrderFingerprints) {
-    if (expiresAt <= now) global._savedOrderFingerprints.delete(fp);
-  }
-  if (global._savedOrderFingerprints.has(fingerprint)) {
-    console.log('[ORDER SAVE] Duplicate suppressed:', fingerprint);
-    return { ok:true, duplicate:true };
+  const payload = {
+    orderId: String(orderId || '').trim(),
+    timestamp: new Date().toLocaleString('en-PK', { timeZone:'Asia/Karachi' }),
+    name: normalized.name,
+    phone: phone,
+    product: normalized.product,
+    qty: normalized.qty,
+    size: 'N/A',
+    price: normalized.price,
+    payment: normalized.payment,
+    address: normalized.address,
+    city: normalized.city,
+    status: 'Pending'
+  };
+
+  if (!payload.orderId) {
+    console.error('[ORDER SHEETS SYNC] Missing authoritative Neon order ID.');
+    return { ok:false, reason:'missing_order_id' };
   }
 
   try {
-    const tok = await getGToken(email, key);
-    if (!tok) throw new Error('Google access token unavailable');
+    const r = await fetch(webhookUrl, {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
 
-    // RAW prevents customer-controlled strings from being interpreted as Sheets formulas.
-    const row = [
-      new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'}),
-      normalized.name,
-      phone,
-      normalized.product,
-      normalized.qty,
-      normalized.price,
-      normalized.payment,
-      normalized.address,
-      normalized.city,
-      'Pending'
-    ];
+    const body = await r.text().catch(() => '');
+    let result = null;
+    try { result = JSON.parse(body); } catch (_) {}
 
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${sid}/values/Sheet1!A:J:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
-    const retryable = new Set([408,429,500,502,503,504]);
-
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const r = await fetch(url, {
-        method:'POST',
-        headers:{Authorization:`Bearer ${tok}`,'Content-Type':'application/json'},
-        body:JSON.stringify({values:[row]})
-      });
-
-      if (r.ok) {
-        global._savedOrderFingerprints.set(fingerprint, Date.now() + 30 * 60 * 1000);
-        console.log('[ORDER SAVE] Success:', fingerprint);
-        return { ok:true, duplicate:false, fingerprint };
-      }
-
-      const body = await r.text().catch(() => '');
-      console.error(`[ORDER SAVE] Google Sheets ${r.status} attempt ${attempt}:`, body.slice(0,200));
-      if (!retryable.has(r.status) || attempt === 3) {
-        return { ok:false, reason:`sheets_${r.status}` };
-      }
-      await sleep(1000 * attempt);
+    if (!r.ok) {
+      console.error('[ORDER SHEETS SYNC] Apps Script HTTP', r.status, body.slice(0,200));
+      return { ok:false, reason:`apps_script_${r.status}` };
     }
+
+    if (result?.result !== 'success') {
+      console.error('[ORDER SHEETS SYNC] Apps Script rejected order:', body.slice(0,250));
+      return { ok:false, reason:'apps_script_rejected' };
+    }
+
+    console.log('[ORDER SHEETS SYNC] Apps Script accepted order:', payload.orderId);
+    return { ok:true, duplicate:false, orderId:payload.orderId };
   } catch (e) {
-    console.error('[ORDER SAVE] Exception:', e?.message || e);
+    console.error('[ORDER SHEETS SYNC] Exception:', e?.message || e);
     return { ok:false, reason:'exception' };
   }
-  return { ok:false, reason:'unknown' };
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -287,9 +279,12 @@ module.exports = async (req, res) => {
   const CEREBRAS_API_KEY    = (process.env.CEREBRAS_API_KEY    || '').trim();
   const OPENROUTER_API_KEY  = (process.env.OPENROUTER_API_KEY  || '').trim();
   const DATABASE_URL        = (process.env.DATABASE_URL        || '').trim();
-  const GOOGLE_SHEETS_ID    = (process.env.GOOGLE_SHEETS_ID    || '').trim();
-  const GOOGLE_SA_EMAIL     = (process.env.GOOGLE_SA_EMAIL     || '').trim();
-  const GOOGLE_SA_KEY       = (process.env.GOOGLE_SA_KEY       || '').trim();
+  // Google Sheets sync uses the existing Apps Script Web App.
+  // No service-account email/private key is required.
+  const GOOGLE_SHEETS_WEBHOOK_URL = (
+    process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
+    'https://script.google.com/macros/s/AKfycbzHPmIPuSj0FILOn54WPo57CtzrJZssQqGvSTojhvTuVMYTNe5tQMr_3bU_uOHHb4QlsA/exec'
+  ).trim();
 
   const SYSTEM_PROMPT = `You are Zara — a warm, human-sounding sales agent of Fatima Arts (فاطمہ آرٹس), a premium unstitched fabric brand in Pakistan. You are NOT a robot. NEVER mention AI, automation, or software.
 
@@ -674,18 +669,21 @@ Remember full conversation. Use context. Never repeat answered questions.
           } else {
             console.log('[ORDER AUTHORITY] Neon order persisted:', neonResult.id, neonResult.duplicate ? 'duplicate' : 'new');
 
-            // Downstream sync only. A Sheets failure does NOT undo a confirmed Neon order.
-            const sheetResult = await saveToSheet(
-              GOOGLE_SHEETS_ID,
-              GOOGLE_SA_EMAIL,
-              GOOGLE_SA_KEY,
+            // Downstream sync only. Neon remains the source of truth.
+            // Apps Script runs asynchronously so Google Sheets latency never delays Zara's confirmation.
+            const sheetSync = syncOrderToAppsScript(
+              GOOGLE_SHEETS_WEBHOOK_URL,
+              neonResult.id,
               orderTag,
               fromNumber
             );
-            if (!sheetResult.ok && !sheetResult.duplicate) {
-              console.error('[ORDER SHEETS SYNC] Downstream sync failed; Neon remains source of truth:', sheetResult.reason);
+            if (waitUntilFn) {
+              waitUntilFn(sheetSync);
             } else {
-              console.log('[ORDER SHEETS SYNC] Downstream sync accepted:', sheetResult.duplicate ? 'duplicate' : 'saved');
+              const sheetResult = await sheetSync;
+              if (!sheetResult.ok) {
+                console.error('[ORDER SHEETS SYNC] Apps Script sync failed; Neon remains source of truth:', sheetResult.reason);
+              }
             }
           }
         }
