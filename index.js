@@ -175,6 +175,7 @@ function normalizeOrder(order, phone) {
     payment: String(order.payment || '').trim(),
     address: fixCities(String(order.address || '').trim()),
     city: fixCities(String(order.city || '').trim()),
+    color: String(order.color || '').trim(),
   };
   if (!out.name || !out.product || !out.qty || !out.price || !out.payment || !out.address || !out.city) return null;
   if (!/^\d+(?:\.\d+)?$/.test(out.qty) || Number(out.qty) < 1 || Number(out.qty) > 100) return null;
@@ -217,6 +218,7 @@ async function syncOrderToAppsScript(webhookUrl, orderId, order, phone) {
     payment: normalized.payment,
     address: normalized.address,
     city: normalized.city,
+    color: normalized.color || 'N/A',
     status: 'Pending'
   };
 
@@ -348,6 +350,7 @@ Lawn → "ویسے ہمارا Karandi بھی اس موسم میں بہت پسن�
 Marina → "اگر کچھ aur premium چاہیے تو ہمارا Velvet بھی دیکھیں — بہت خوبصورت ہے"
 Retail → mention wholesale if reseller likely: "کیا آپ دکان کے لیے لے رہی ہیں؟ wholesale میں اچھی rate مل سکتی ہے"
 One suggestion only. Feel natural, never pushy.
+When recommending a specific catalogue item, include its confirmed product name and color name when that information is available. Never invent a color or present an unconfirmed color as a fact.
 
 === PRICING ===
 RETAIL: PKR 3,600/suit | delivery extra | no minimum
@@ -387,7 +390,7 @@ After 10PM: brief reply, full answer next morning
 4. Confirm payment method
 
 When order fully confirmed (address + payment both received), you MUST write this tag on its own line:
-[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad]
+[ORDER:name=CustomerName|product=Product|qty=1|price=3600|payment=COD|address=Full Address|city=Faisalabad|color=Color]
 
 === MULTI-PRODUCT ORDERS — CRITICAL ===
 If the customer confirms 2 or more different products/suits in the same order, NEVER create an order tag for only one product.
@@ -395,6 +398,7 @@ Combine ALL confirmed products into the single product field, separated by " + "
 [ORDER:name=Muhammad Shahzad|product=Gold Floral – ML1203-16 + Blue Floral – ML1203-20|qty=2|price=3600|payment=COD|address=Full Address|city=Faisalabad]
 The qty field must be the TOTAL number of suits/items in the order.
 The price field must be the UNIT price when all items have the same unit price. The system calculates the total automatically.
+The color field must contain the confirmed catalogue color name. For multiple products, list colors in the same order as the products, separated by " + ". Never invent a color. If the customer has not confirmed the color and the catalogue does not provide it, leave the color field as N/A and do not guess.
 If different products have different prices, do NOT invent a single price; ask for clarification or follow the existing confirmed-order process.
 Write ONE ORDER tag containing ALL confirmed items. Never omit an item that Zara has just confirmed to the customer.
 Write it ONCE only, and ONLY after every field above is actually confirmed by the customer. Never invent missing fields. Always spell city correctly.
