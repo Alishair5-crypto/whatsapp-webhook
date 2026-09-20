@@ -79,14 +79,14 @@ function isCatalogueIntent(text) {
 function classifyIntent(text) {
   const t = normalizeText(text);
   if (!t) return { intent: 'OTHER', confidence: 1, reference: 'NONE', wantsImages: false };
-  const image = wantsCatalogueImages(t);
+  const directImageRequest = (hasAny(t, IMAGE_SINGULAR_WORDS) || hasAny(t, IMAGE_PLURAL_WORDS)) && !/(?:no|without)\\s+(?:image|picture|pic|photo|tasveer)/i.test(t);\n  const image = directImageRequest || wantsCatalogueImages(t);
   if (image) {
-    const more = /\\b(?:aur|more|another|kuch aur)\\b/.test(t);
-    return { intent: more ? 'MORE_DESIGNS' : 'IMAGE_REQUEST', confidence: 0.98, reference: /\\b(?:iski|is ki|yeh|ye|woh|wo|same)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: true };
+    const more = /\b(?:aur|more|another|kuch aur)\b/.test(t);
+    return { intent: more ? 'MORE_DESIGNS' : 'IMAGE_REQUEST', confidence: 0.98, reference: /\b(?:iski|is ki|yeh|ye|woh|wo|same)\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: true };
   }
-  if (isOrderIntent(t)) return { intent: 'ORDER_INTENT', confidence: 0.98, reference: /\\b(?:yeh|ye|is|woh|wo)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
-  if (/(?:price|rate|cost|kitna|kitni|qeemat|قیمت|ریٹ|کتنا|کتنی)/i.test(t)) return { intent: 'PRICE', confidence: 0.96, reference: /\\b(?:iski|is ki|yeh|ye|woh|wo)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
-  if (/(?:available|stock|avail|dastiyab|دستیاب|موجود|اسٹاک)/i.test(t)) return { intent: 'AVAILABILITY', confidence: 0.96, reference: /\\b(?:iski|is ki|yeh|ye|woh|wo)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
+  if (isOrderIntent(t)) return { intent: 'ORDER_INTENT', confidence: 0.98, reference: /\b(?:yeh|ye|is|woh|wo)\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
+  if (/(?:price|rate|cost|kitna|kitni|qeemat|قیمت|ریٹ|کتنا|کتنی)/i.test(t)) return { intent: 'PRICE', confidence: 0.96, reference: /\b(?:iski|is ki|yeh|ye|woh|wo)\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
+  if (/(?:available|stock|avail|dastiyab|دستیاب|موجود|اسٹاک)/i.test(t)) return { intent: 'AVAILABILITY', confidence: 0.96, reference: /\b(?:iski|is ki|yeh|ye|woh|wo)\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
   if (hasAny(t, PRODUCT_WORDS) || hasAny(t, BROWSE_WORDS)) return { intent: 'PRODUCT_SEARCH', confidence: 0.9, reference: 'NEW_SEARCH', wantsImages: false };
   if (/(?:what is this|yeh kya|ye kya|is ka naam|iska naam)/i.test(t)) return { intent: 'PRODUCT_DETAIL', confidence: 0.9, reference: 'CURRENT_CONTEXT', wantsImages: false };
   return { intent: 'OTHER', confidence: 0.8, reference: 'NONE', wantsImages: false };
