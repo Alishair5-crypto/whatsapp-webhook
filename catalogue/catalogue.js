@@ -38,7 +38,7 @@ async function searchCatalogue(dbUrl, filters = {}) {
   const sql = getSql(dbUrl);
   if (!sql) throw new Error('Catalogue database is not configured');
 
-  const { fabric, color, collection, name, limit } = normalizeFilters(filters);
+  const { fabric, color, collection, name, keywords, limit } = normalizeFilters(filters);
 
   const rows = await sql`
     SELECT
@@ -70,7 +70,18 @@ async function searchCatalogue(dbUrl, filters = {}) {
       AND (${fabric} = '' OR LOWER(p.fabric) = LOWER(${fabric}))
       AND (${color} = '' OR LOWER(p.color) = LOWER(${color}))
       AND (${collection} = '' OR LOWER(p.collection) = LOWER(${collection}))
-      AND (${name} = '' OR LOWER(p.name) LIKE LOWER(${`%${name}%`}))
+      AND (
+        ${name} = ''
+        OR LOWER(CONCAT_WS(' ', p.name, p.collection, p.fabric, p.color, COALESCE(p.description, '')))
+           LIKE LOWER(`%${name}%`)
+        OR ${keywords.length} = 0
+        OR (
+          SELECT COUNT(*)
+          FROM unnest(${keywords}::text[]) AS kw
+          WHERE LOWER(CONCAT_WS(' ', p.name, p.collection, p.fabric, p.color, COALESCE(p.description, '')))
+                LIKE LOWER('%' || kw || '%')
+        ) = ${keywords.length}
+      )
     GROUP BY p.id, i.stock_quantity, i.product_id
     ORDER BY p.updated_at DESC, p.id DESC
     LIMIT ${limit}
@@ -85,6 +96,7 @@ function normalizeFilters(filters = {}) {
     color: clean(filters.color),
     collection: clean(filters.collection),
     name: clean(filters.name),
+    keywords: Array.isArray(filters.keywords) ? filters.keywords.map(v => clean(v, 60)).filter(Boolean).slice(0, 8) : [],
     // Catalogue visual requests may need the complete relevant set.
     // The hard safety ceiling remains 50 records.
     limit: positiveInt(filters.limit, 50, 50)

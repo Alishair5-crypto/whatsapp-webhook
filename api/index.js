@@ -181,9 +181,15 @@ async function injectMemoryIntoAI(url,init,ctx){
   if(!query){try{const last=payload?.messages?.[payload.messages.length-1]?.content;if(typeof last==='string')query=last}catch(_){}
   }
   if(query)ctx.userText=query.replace(/^Customer name:\s*[^\n]+\n/i,'').trim();
-  if(!ctx.catalogueChecked&&ctx.userText){ctx.catalogueChecked=true;ctx.catalogue=await getCatalogueForMessage(process.env.DATABASE_URL||'',ctx.userText)}
   const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText);
-  const catalogueContext=ctx.catalogue?.context||'';
+  if(!ctx.catalogueChecked&&ctx.userText){
+    ctx.catalogueChecked=true;
+    ctx.catalogue=await getCatalogueForMessage(process.env.DATABASE_URL||'',ctx.userText,memory);
+  }
+  const intentContext=ctx.catalogue?.intent
+    ? `\\n=== ZARA INTENT ANALYSIS ===\\nIntent: ${ctx.catalogue.intent} | Confidence: ${ctx.catalogue.intentConfidence ?? ''} | Reference: ${ctx.catalogue.reference || 'NONE'}\\nTreat this as the customer's primary intent. Fulfil that intent first. Do not send catalogue images unless intent.wantsImages is true.\\n`
+    : '';
+  const catalogueContext=intentContext+(ctx.catalogue?.context||'');
   strengthenUrduPrompt(payload);
   if(Array.isArray(payload.contents)){
     const system=payload.system_instruction?.parts?.[0]?.text;
