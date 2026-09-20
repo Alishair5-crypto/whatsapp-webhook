@@ -79,7 +79,8 @@ function isCatalogueIntent(text) {
 function classifyIntent(text) {
   const t = normalizeText(text);
   if (!t) return { intent: 'OTHER', confidence: 1, reference: 'NONE', wantsImages: false };
-  const directImageRequest = (hasAny(t, IMAGE_SINGULAR_WORDS) || hasAny(t, IMAGE_PLURAL_WORDS)) && !/(?:no|without)\\s+(?:image|picture|pic|photo|tasveer)/i.test(t);\n  const image = directImageRequest || wantsCatalogueImages(t);
+  const directImageRequest = (hasAny(t, IMAGE_SINGULAR_WORDS) || hasAny(t, IMAGE_PLURAL_WORDS)) && !/(?:no|without)\s+(?:image|picture|pic|photo|tasveer)/i.test(t);
+  const image = directImageRequest || wantsCatalogueImages(t);
   if (image) {
     const more = /\b(?:aur|more|another|kuch aur)\b/.test(t);
     return { intent: more ? 'MORE_DESIGNS' : 'IMAGE_REQUEST', confidence: 0.98, reference: (more || /\b(?:iski|is ki|yeh|ye|woh|wo|same)\b/.test(t)) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: true };
