@@ -76,7 +76,51 @@ function isCatalogueIntent(text) {
   return false;
 }
 
-function extractFilters(text) { const t=normalizeText(text); return {fabric:findAlias(t,FABRIC_ALIASES),color:findAlias(t,COLOR_ALIASES),collection:findAlias(t,COLLECTION_ALIASES),name:'',limit:50}; }
+function classifyIntent(text) {
+  const t = normalizeText(text);
+  if (!t) return { intent: 'OTHER', confidence: 1, reference: 'NONE', wantsImages: false };
+  const image = wantsCatalogueImages(t);
+  if (image) {
+    const more = /\\b(?:aur|more|another|kuch aur)\\b/.test(t);
+    return { intent: more ? 'MORE_DESIGNS' : 'IMAGE_REQUEST', confidence: 0.98, reference: /\\b(?:iski|is ki|yeh|ye|woh|wo|same)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: true };
+  }
+  if (isOrderIntent(t)) return { intent: 'ORDER_INTENT', confidence: 0.98, reference: /\\b(?:yeh|ye|is|woh|wo)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
+  if (/(?:price|rate|cost|kitna|kitni|qeemat|قیمت|ریٹ|کتنا|کتنی)/i.test(t)) return { intent: 'PRICE', confidence: 0.96, reference: /\\b(?:iski|is ki|yeh|ye|woh|wo)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
+  if (/(?:available|stock|avail|dastiyab|دستیاب|موجود|اسٹاک)/i.test(t)) return { intent: 'AVAILABILITY', confidence: 0.96, reference: /\\b(?:iski|is ki|yeh|ye|woh|wo)\\b/.test(t) ? 'CURRENT_CONTEXT' : 'NEW_SEARCH', wantsImages: false };
+  if (hasAny(t, PRODUCT_WORDS) || hasAny(t, BROWSE_WORDS)) return { intent: 'PRODUCT_SEARCH', confidence: 0.9, reference: 'NEW_SEARCH', wantsImages: false };
+  if (/(?:what is this|yeh kya|ye kya|is ka naam|iska naam)/i.test(t)) return { intent: 'PRODUCT_DETAIL', confidence: 0.9, reference: 'CURRENT_CONTEXT', wantsImages: false };
+  return { intent: 'OTHER', confidence: 0.8, reference: 'NONE', wantsImages: false };
+}
+
+function lastConversationQuery(memoryContext) {
+  if (typeof memoryContext !== 'string') return '';
+  const matches = [...memoryContext.matchAll(/- conversation: (.+)/g)];
+  return matches.length ? String(matches[matches.length - 1][1]).trim() : '';
+}
+
+function resolveCatalogueQuery(text, memoryContext, intent) {
+  const current = normalizeText(text);
+  const reference = intent?.reference === 'CURRENT_CONTEXT';
+  if (!reference) return current;
+  const previous = lastConversationQuery(memoryContext);
+  return previous ? previous : current;
+}
+
+function extractFilters(text, memoryContext = '', intent = null) {
+  const t = normalizeText(text);
+  const query = resolveCatalogueQuery(text, memoryContext, intent);
+  const explicit = {
+    fabric: findAlias(t, FABRIC_ALIASES),
+    color: findAlias(t, COLOR_ALIASES),
+    collection: findAlias(t, COLLECTION_ALIASES)
+  };
+  const stop = new Set([
+    'show','me','send','bhejo','bhej','dikhao','dikha','dikhain','dikhaye','dekhna','please','pics','pic','pictures','picture','images','image','photos','photo','design','designs','tasveer','tasveeren','tasveerain','ki','ka','ke','koi','kuch','aur','more','hai','hain','please','iski','is','ki','yeh','ye','woh','wo','wali','wala','wale','the','this','that','one','same','available','availability','price','rate','cost','kitna','kitni','qeemat','قیمت','تصویر','تصاویر','دکھاؤ','دکھائیں'
+  ]);
+  const words = normalizeText(query).split(/\\s+/).filter(w => w.length > 1 && !stop.has(w));
+  const name = words.slice(0, 8).join(' ');
+  return { ...explicit, name, keywords: words.slice(0, 8), limit: 50 };
+}
 function money(row) { const value=Number(row?.price); return Number.isFinite(value) ? `${row?.currency||'PKR'} ${value.toLocaleString('en-PK')}` : `${row?.currency||'PKR'} ${row?.price??''}`.trim(); }
 function normalizeImageUrl(value) {
   if (typeof value !== 'string') return '';
@@ -116,18 +160,37 @@ function prepareImageLimitedProducts(products, requestedCount) {
   }
   return out;
 }
-async function getCatalogueForMessage(dbUrl,text) {
-  if(!isCatalogueIntent(text)) return null;
+async function getCatalogueForMessage(dbUrl,text,memoryContext='') {
+  const intent = classifyIntent(text);
+  if (!['IMAGE_REQUEST','MORE_DESIGNS','PRODUCT_SEARCH','PRODUCT_DETAIL','PRICE','AVAILABILITY'].includes(intent.intent)) return null;
   try {
-    const filters=extractFilters(text);
-    const products=await searchCatalogue(dbUrl,filters);
-    const wantsImages = wantsCatalogueImages(text);
+    const filters = extractFilters(text, memoryContext, intent);
+    const products = await searchCatalogue(dbUrl, filters);
+    const wantsImages = intent.wantsImages;
     const requestedImageCount = wantsImages ? extractRequestedImageCount(text) : 0;
     const imageProducts = wantsImages ? prepareImageLimitedProducts(products, requestedImageCount) : products;
-    return {filters,products:imageProducts,context:buildContext(products,filters),wantsImages,requestedImageCount,completeCatalogue:isCompleteCatalogueRequest(text)};
+    return {
+      intent: intent.intent,
+      intentConfidence: intent.confidence,
+      reference: intent.reference,
+      filters,
+      products: imageProducts,
+      context: buildContext(products, filters),
+      wantsImages,
+      requestedImageCount,
+      completeCatalogue: isCompleteCatalogueRequest(text)
+    };
   } catch(error) {
     console.error('[CATALOGUE AGENT]',error.message);
-    return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n',wantsImages:false,requestedImageCount:0,completeCatalogue:false};
+    return {
+      intent: intent.intent,
+      intentConfidence: intent.confidence,
+      reference: intent.reference,
+      filters: extractFilters(text, memoryContext, intent),
+      products: [],
+      context:'\\n\\n=== LIVE CATALOGUE RESULT ===\\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\\n',
+      wantsImages:false,requestedImageCount:0,completeCatalogue:false
+    };
   }
 }
-module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,isOrderIntent,extractRequestedImageCount,extractFilters,getCatalogueForMessage,primaryImage,allImages,normalizeImageUrl,isCompleteCatalogueRequest,buildContext};
+module.exports={normalizeText,classifyIntent,isCatalogueIntent,wantsCatalogueImages,isOrderIntent,extractRequestedImageCount,extractFilters,resolveCatalogueQuery,getCatalogueForMessage,primaryImage,allImages,normalizeImageUrl,isCompleteCatalogueRequest,buildContext};
