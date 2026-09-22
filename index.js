@@ -257,7 +257,7 @@ async function syncOrderToAppsScript(webhookUrl, orderId, order, phone) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function oaiChat({ url, key, model, messages, maxTokens=1200, timeout=20000 }) {
+async function oaiChat({ url, key, model, messages, maxTokens=1200, timeout=6000 }) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeout);
   try { return await fetch(`${url}/chat/completions`, { method:'POST', signal:ctrl.signal, headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'}, body:JSON.stringify({model, messages, temperature:0.7, max_tokens:maxTokens}) }); }
@@ -582,10 +582,13 @@ Remember full conversation. Use context. Never repeat answered questions.
             const cbKey = `g:${model}`;
             if (isBlocked(cbKey)) { console.warn('[SKIP]', cbKey); continue; }
 
-            for (let attempt = 1; attempt <= 2; attempt++) {
+            // Targeted latency guard: one bounded attempt per Gemini model.
+            // Provider overload/timeouts are circuit-broken briefly so the next
+            // request does not repeatedly spend 20s+ before falling back.
+            for (let attempt = 1; attempt <= 1; attempt++) {
               if (aiReply) break;
               const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 20000);
+              const timeoutId = setTimeout(() => controller.abort(), 6000);
               try {
                 console.log(`[STEP B] Querying ${model} (attempt ${attempt})...`);
                 const r = await fetch(
@@ -608,17 +611,22 @@ Remember full conversation. Use context. Never repeat answered questions.
                   break;
                 }
                 if (r.status === 429) { blockFor(cbKey,5*60*1000); console.warn(`[STEP B 429] ${model} quota`); break; }
-                if (r.status === 503 && attempt < 2) {
+                if (r.status === 503) {
                   await r.text().catch(() => '');
-                  console.warn(`[STEP B 503] ${model} overloaded, retry in 2s...`);
-                  await sleep(2000); continue;
+                  blockFor(cbKey,30*1000);
+                  console.warn(`[STEP B 503] ${model} overloaded → 30s circuit break; moving to next provider`);
+                  break;
                 }
                 const et = await r.text().catch(() => '');
                 console.error(`[STEP B FAIL] ${model} ${r.status}:`, et.slice(0,150));
                 break;
               } catch (e) {
                 const isAbort = e?.name === 'AbortError' || String(e?.message || '').includes('abort');
-                if (isAbort && attempt < 2) { console.warn(`[STEP B TIMEOUT] ${model} retry...`); await sleep(2000); continue; }
+                if (isAbort) {
+                  blockFor(cbKey,30*1000);
+                  console.warn(`[STEP B TIMEOUT] ${model} → 30s circuit break; moving to next provider`);
+                  break;
+                }
                 console.error(`[STEP B EXCEPTION] ${model}:`, e.message);
                 break;
               } finally { clearTimeout(timeoutId); }
@@ -634,7 +642,7 @@ Remember full conversation. Use context. Never repeat answered questions.
               const r = await oaiChat({ url:'https://api.cerebras.ai/v1', key:CEREBRAS_API_KEY, model:'llama-3.3-70b', messages:oaiMessages });
               if (r.ok) { const d=await r.json(); const raw=d.choices?.[0]?.message?.content?.trim(); if(raw){aiReply=raw.replace(/[*_~`#]/g,'').trim();} console.log('[STEP B SUCCESS] Cerebras'); break; }
               if (r.status===429) { blockFor('cerebras',5*60*1000); break; }
-              if (r.status===503&&att<2) { await sleep(4000); continue; }
+              if (r.status===503) { blockFor('cerebras',30*1000); console.warn('[STEP B 503] Cerebras overloaded → 30s circuit break'); break; }
               console.error('[STEP B FAIL] Cerebras', r.status); break;
             } catch(e) { const ab=e?.name==='AbortError'||String(e?.message||'').includes('abort'); if(ab&&att<2){await sleep(2000);continue;} console.error('[STEP B EXC] Cerebras:', e.message); break; }
           }
