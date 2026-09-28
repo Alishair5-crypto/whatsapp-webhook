@@ -303,6 +303,7 @@ Rules:
 
 DEFAULT when unsure: Urdu script (اردو حروف) — NOT Roman Urdu
 NEVER mix languages. NEVER switch unless customer switches first.
+CRITICAL RESPONSE LANGUAGE LOCK: The customer's LATEST message is the authority for reply language. Preserve the customer's language AND script exactly. Do not translate, transliterate, or switch script. If the latest message is Urdu script, the complete reply must be Urdu script. If Roman Urdu, the complete reply must be Roman Urdu. If English, the complete reply must be English.
 Tone: warm Pakistani — pure Urdu accent, not Hindi, not English accent.
 
 === CITY NAMES (always correct) ===
@@ -325,6 +326,18 @@ Use greeting on FIRST message only.
 
 === CAPABILITIES ===
 You handle text messages AND voice notes (transcribed to text). Reply naturally to both.
+
+=== CUSTOMER INTENT LOCK — MANDATORY ===
+The customer's LATEST message is the authoritative intent. You MUST answer that intent directly before adding anything else.
+- Do not answer a different question.
+- Do not change the requested product, fabric, color, quantity, action, or purpose.
+- If the customer asks for ANOTHER / MORE / DIFFERENT options, provide additional options matching the requested category; do not substitute a different fabric/category.
+- If the customer asks to see products, respond with the requested products/options; do not only ask an unrelated follow-up.
+- If the customer rejects or complains about a product/category, stop recommending that rejected product/category unless the customer explicitly asks for it again.
+- If catalogue/action logic has already identified the requested category, keep the conversational reply aligned with that same category.
+- Never contradict the latest customer request or the action being performed.
+- Context may inform the answer, but it must NEVER override the customer's latest explicit intent.
+- If information is unavailable, say so in the SAME LANGUAGE/SCRIPT and offer the closest valid next step without changing the customer's intent.
 
 === SEASON & FESTIVAL AWARENESS ===
 WINTER (Nov–Feb) → Marina, Velvet, Dhanak, Karandi first
@@ -709,6 +722,25 @@ Remember full conversation. Use context. Never repeat answered questions.
               }
             }
           }
+        }
+
+        // TARGETED RESPONSE GUARD: the latest customer message is the source of truth.
+        // Reject obvious cross-language drift before delivery; do not rewrite customer intent.
+        const latestText = String(userMessageText || '').trim();
+        const urduChars = (latestText.match(/[\u0600-\u06FF]/g) || []).length;
+        const latinChars = (latestText.match(/[A-Za-z]/g) || []).length;
+        const replyUrduChars = (String(aiReply).match(/[\u0600-\u06FF]/g) || []).length;
+        const replyLatinChars = (String(aiReply).match(/[A-Za-z]/g) || []).length;
+        const latestUrduScript = urduChars >= 3 && urduChars >= latinChars;
+        const latestRomanOrEnglish = latinChars >= 3 && latinChars > urduChars;
+        const replyLanguageMismatch =
+          (latestUrduScript && replyLatinChars > replyUrduChars * 2) ||
+          (latestRomanOrEnglish && replyUrduChars > replyLatinChars * 2);
+        if (replyLanguageMismatch) {
+          console.warn('[LANGUAGE GUARD] Reply rejected: latest customer language/script mismatch');
+          aiReply = latestUrduScript
+            ? 'جی، آپ کی بات سمجھ گئی ہوں۔ میں اسی چیز کے مزید آپشنز دکھاتی ہوں۔ 😊'
+            : 'Ji, aap ki baat samajh gayi hoon. Main isi cheez ke mazeed options dikhati hoon. 😊';
         }
 
         aiReply = fixCities(aiReply);
