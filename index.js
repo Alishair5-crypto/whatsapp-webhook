@@ -74,12 +74,13 @@ function midnightReset() {
 }
 
 if (!global._dedup) global._dedup = new Map();
-function alreadyProcessed(msgId) {
+function alreadyProcessed(msgId, scope = 'meta') {
   if (!msgId) return false;
+  const scopedId = `${scope}:${msgId}`;
   const now = Date.now();
   if (global._dedup.size > 500) for (const [k,v] of global._dedup) if (v <= now) global._dedup.delete(k);
-  if ((global._dedup.get(msgId) || 0) > now) return true;
-  global._dedup.set(msgId, now + 10 * 60 * 1000);
+  if ((global._dedup.get(scopedId) || 0) > now) return true;
+  global._dedup.set(scopedId, now + 10 * 60 * 1000);
   return false;
 }
 
@@ -285,6 +286,7 @@ module.exports = async (req, res) => {
   // No service-account email/private key is required.
   const PROVIDER = String(req.headers?.['x-easyreach-provider'] || 'meta').toLowerCase();
   const EVOLUTION_INSTANCE = String(req.headers?.['x-easyreach-instance'] || '').trim();
+  const EASYREACH_TENANT_ID = String(req.headers?.['x-easyreach-tenant-id'] || '').trim();
 
   const GOOGLE_SHEETS_WEBHOOK_URL = (
     process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
@@ -495,7 +497,8 @@ Remember full conversation. Use context. Never repeat answered questions.
         if (!message) return;
 
         const msgId = message?.id;
-        if (alreadyProcessed(msgId)) { console.log('[DEDUP] Skip:', msgId); return; }
+        const dedupScope = PROVIDER === 'evolution' ? `evolution:${EASYREACH_TENANT_ID}:${EVOLUTION_INSTANCE}` : 'meta';
+        if (alreadyProcessed(msgId, dedupScope)) { console.log('[DEDUP] Skip:', msgId); return; }
 
         const fromNumber = message.from;
         if (!fromNumber) { console.error('[ERROR] message.from missing'); return; }
@@ -508,51 +511,69 @@ Remember full conversation. Use context. Never repeat answered questions.
 
         if (message.type === 'text') {
           userMessageText = fixCities(message.text?.body || '');
-        } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN && PROVIDER !== 'evolution') {
-          console.log('[STEP A] Fetching audio from Meta...');
-          const mediaId = message.audio?.id || message.voice?.id;
-
-          if (!mediaId) {
-            userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-          } else {
-            const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
-            if (!mediaRes.ok) {
-              console.error('[STEP A FAIL] Media fetch:', mediaRes.status);
-              userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-            } else {
-              const mediaData = await mediaRes.json();
-              if (!mediaData?.url) {
-                console.error('[STEP A FAIL] No URL in mediaData');
-                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-              } else {
-                const audioStream = await fetch(mediaData.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
-                if (!audioStream.ok) {
-                  console.error('[STEP A FAIL] Audio download:', audioStream.status);
-                  userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
-                } else {
-                  const arrayBuffer = await audioStream.arrayBuffer();
-                  const formData = new globalThis.FormData();
-                  const blob = new globalThis.Blob([arrayBuffer], { type: 'audio/ogg' });
-                  formData.append('file', blob, 'voice.ogg');
-                  formData.append('model', 'whisper-large-v3-turbo');
-                  formData.append('language', 'ur');
-                  formData.append('prompt', 'فاطمہ آرٹس، زارہ، فیصل آباد Faisalabad (NOT Faizabad)، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک، کپڑے کی دکان');
-
-                  const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
-                    method: 'POST', headers: { Authorization: `Bearer ${GROQ_API_KEY}` }, body: formData
-                  });
-
-                  if (groqRes.ok) {
-                    const groqData = await groqRes.json();
-                    userMessageText = fixCities((groqData.text || '').trim());
-                    console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0, 80));
-                  } else {
-                    console.error('[STEP A FAIL] Groq STT:', groqRes.status);
-                    userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+        } else if (isAudioIncoming && GROQ_API_KEY) {
+          try {
+            let arrayBuffer = null;
+            let mimeType = 'audio/ogg';
+            if (PROVIDER === 'evolution') {
+              console.log('[STEP A] Fetching audio from Evolution...');
+              const evolution = require('./lib/evolution-whatsapp');
+              const media = message.audio || {};
+              mimeType = media.mimetype || mimeType;
+              let base64 = media.base64 || '';
+              if (!base64 && media.url) {
+                const downloaded = await evolution.downloadMedia({
+                  instance: EVOLUTION_INSTANCE,
+                  message: message._evolutionRawMessage
+                });
+                base64 = downloaded?.data?.base64 || downloaded?.base64 || '';
+              }
+              if (base64) {
+                const raw = String(base64).replace(/^data:[^;]+;base64,/i, '');
+                arrayBuffer = Buffer.from(raw, 'base64');
+              }
+            } else if (WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+              console.log('[STEP A] Fetching audio from Meta...');
+              const mediaId = message.audio?.id || message.voice?.id;
+              if (mediaId) {
+                const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
+                if (mediaRes.ok) {
+                  const mediaData = await mediaRes.json();
+                  if (mediaData?.url) {
+                    const audioStream = await fetch(mediaData.url, { headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` } });
+                    if (audioStream.ok) {
+                      mimeType = mediaData.mime_type || mimeType;
+                      arrayBuffer = await audioStream.arrayBuffer();
+                    }
                   }
                 }
               }
             }
+
+            if (!arrayBuffer) {
+              userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+            } else {
+              const ext = /mpeg|mp3/i.test(mimeType) ? 'mp3' : /mp4|m4a/i.test(mimeType) ? 'm4a' : /wav/i.test(mimeType) ? 'wav' : 'ogg';
+              const formData = new globalThis.FormData();
+              formData.append('file', new globalThis.Blob([arrayBuffer], { type: mimeType }), `voice.${ext}`);
+              formData.append('model', 'whisper-large-v3-turbo');
+              formData.append('language', 'ur');
+              formData.append('prompt', 'فاطمہ آرٹس، زارا، فیصل آباد Faisalabad (NOT Faizabad)، لاہور Lahore، کراچی Karachi، لان، کھدر، مارینہ، ویلوٹ، دھنک، کرندی، کوٹیل، قیمت، ڈیلیوری، پاکستانی گاہک، کپڑے کی دکان');
+              const groqRes = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+                method: 'POST', headers: { Authorization: `Bearer ${GROQ_API_KEY}` }, body: formData
+              });
+              if (groqRes.ok) {
+                const groqData = await groqRes.json();
+                userMessageText = fixCities((groqData.text || '').trim());
+                console.log('[STEP A SUCCESS] Transcribed:', userMessageText.slice(0, 120));
+              } else {
+                console.error('[STEP A FAIL] Groq STT:', groqRes.status);
+                userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
+              }
+            }
+          } catch (error) {
+            console.error('[STEP A ERROR] Evolution/Meta media:', error.message);
+            userMessageText = '[Customer ne voice message bheja — unse poochein kya chahiye]';
           }
         } else if (message.type === 'image') userMessageText = '[Customer ne ek image bheji hai — poochein kya dekhna chahte hain]';
           else if (message.type === 'sticker') userMessageText = '[Customer ne sticker bheja — friendly acknowledgment do]';
@@ -562,12 +583,15 @@ Remember full conversation. Use context. Never repeat answered questions.
         if (!userMessageText.trim()) userMessageText = 'السلام علیکم';
 
         let history = [];
-        const dbData = await dbGet(DATABASE_URL, fromNumber);
+        const conversationKey = PROVIDER === 'evolution'
+          ? `evolution:${EASYREACH_TENANT_ID}:${EVOLUTION_INSTANCE}:${fromNumber}`
+          : fromNumber;
+        const dbData = PROVIDER === 'evolution' ? null : await dbGet(DATABASE_URL, fromNumber);
         if (dbData) {
           history = dbData.history || [];
         } else {
-          if (!chatHistories.has(fromNumber)) chatHistories.set(fromNumber, []);
-          history = chatHistories.get(fromNumber);
+          if (!chatHistories.has(conversationKey)) chatHistories.set(conversationKey, []);
+          history = chatHistories.get(conversationKey);
         }
         const MAX_HISTORY = 20;
 
