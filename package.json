@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test:catalogue": "node --test catalogue/*.test.js"
+    "test:catalogue": "node --test catalogue/*.test.js",
+    "test:evolution": "node --test lib/evolution-whatsapp.test.js",
+    "test": "npm run test:catalogue && npm run test:evolution"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

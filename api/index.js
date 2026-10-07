@@ -156,7 +156,7 @@ async function recoverConfirmedOrder(ctx){
   if(!process.env.GOOGLE_SHEETS_ID||!process.env.GOOGLE_SA_EMAIL||!process.env.GOOGLE_SA_KEY)return null;
   if(/\[ORDER:/i.test(ctx.aiReply||''))return null;
   try{
-    const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText);
+    const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText,ctx.tenantId,ctx.provider);
     const prompt=`Extract an order ONLY if the customer has explicitly confirmed every required field. Required: name, product, qty, price, payment (COD/JazzCash/EasyPaisa), full delivery address, city. Never infer missing fields. Return ONLY JSON or null with keys name, product, qty, price, payment, address, city. Customer message: ${ctx.userText}\nZara reply: ${ctx.aiReply}\nRelevant saved conversation context: ${String(memory||'').slice(-7000)}`;
     const response=await originalFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system_instruction:{parts:[{text:'You are a strict order validator. Never guess. Return JSON only.'}]},contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,maxOutputTokens:300,responseMimeType:'application/json'}})});
     if(!response.ok)return null;
@@ -197,11 +197,21 @@ async function injectMemoryIntoAI(url,init,ctx){
   if(Array.isArray(payload.contents))console.log('[GEMINI SANITIZE] contents sanitized; unsupported audio metadata removed');
   return {...init,body:JSON.stringify(payload)};
 }
-async function maybeRemember(ctx){if(!ctx||ctx.remembered||!ctx.phone||!ctx.msgId||!ctx.userText||!ctx.aiReply)return;ctx.remembered=true;await remember(process.env.DATABASE_URL||'',ctx.phone,ctx.msgId,ctx.userText,ctx.aiReply,ctx.customerName)}
+async function maybeRemember(ctx){if(!ctx||ctx.remembered||!ctx.phone||!ctx.msgId||!ctx.userText||!ctx.aiReply)return;ctx.remembered=true;await remember(process.env.DATABASE_URL||'',ctx.phone,ctx.msgId,ctx.userText,ctx.aiReply,ctx.customerName,ctx.tenantId,ctx.provider)}
 function rotateProducts(products,phone){if(!Array.isArray(products)||products.length<2||!phone)return products||[];const previous=catalogueRotation.get(phone)||0;const offset=previous%products.length;catalogueRotation.set(phone,(offset+1)%products.length);return products.slice(offset).concat(products.slice(0,offset))}
 async function sendCatalogueImages(ctx,headers){
   if(!ctx?.catalogue?.wantsImages||!ctx.catalogue.products?.length||ctx.catalogueImagesSent)return;
-  if(!ctx.phone||!process.env.WHATSAPP_TOKEN||!process.env.PHONE_NUMBER_ID)return;
+  if(!ctx.phone)return;
+  if(ctx.provider==='evolution'){
+    const evolution=require('../lib/evolution-whatsapp');
+    if(!evolution.getInstanceConfig(ctx.instance))return;
+    const products=rotateProducts(ctx.catalogue.products,ctx.phone);const selected=[];const urls=new Set();
+    for(const product of products){const productUrls=allImages(product);for(const url of productUrls){if(!url||urls.has(url)||!/^https:\/\//i.test(url))continue;urls.add(url);selected.push({product,url})}}
+    if(!selected.length)return;ctx.catalogueImagesSent=true;
+    for(const item of selected){try{const price=Number(item.product?.price);const priceText=Number.isFinite(price)?`${item.product?.currency||'PKR'} ${price.toLocaleString('en-PK')}`:'';const caption=`${item.product?.name||'Product'}${priceText?` — ${priceText}`:''}`.slice(0,1024);await evolution.sendImage({instance:ctx.instance,to:ctx.phone,url:item.url,caption});}catch(error){console.error('[EVOLUTION IMAGE] Error:',error.message)}}
+    return;
+  }
+  if(!process.env.WHATSAPP_TOKEN||!process.env.PHONE_NUMBER_ID)return;
   const products=rotateProducts(ctx.catalogue.products,ctx.phone);const selected=[];const urls=new Set();
   for(const product of products){const productUrls=allImages(product);for(const url of productUrls){if(!url||urls.has(url)||!/^https:\/\//i.test(url))continue;urls.add(url);selected.push({product,url})}}
   if(!selected.length)return;ctx.catalogueImagesSent=true;console.log('[CATALOGUE] Sending relevant image set:',selected.length,'images');
@@ -225,6 +235,25 @@ if(originalFetch&&!globalThis.__zaraVoiceFetchPatched){
       return response;
     }
     if(isWhatsAppSend(url)&&typeof init.body==='string'){
+      if(ctx?.provider==='evolution'){
+        try{
+          const payload=JSON.parse(init.body);
+          const evolution=require('../lib/evolution-whatsapp');
+          if(payload?.type==='text'&&typeof payload?.text?.body==='string'){
+            const text=normalizeUrdu(payload.text.body); if(ctx)ctx.aiReply=text;
+            await recoverConfirmedOrder(ctx); const responseData=await evolution.sendText({instance:ctx.instance,to:ctx.phone,text});
+            await maybeRemember(ctx); await sendCatalogueImages(ctx,headers);
+            return new Response(JSON.stringify(responseData||{ok:true}),{status:200,headers:{'content-type':'application/json'}});
+          }
+          if(payload?.type==='image'&&payload?.image?.link){
+            const responseData=await evolution.sendImage({instance:ctx.instance,to:ctx.phone,url:payload.image.link,caption:payload.image.caption||''});
+            return new Response(JSON.stringify(responseData||{ok:true}),{status:200,headers:{'content-type':'application/json'}});
+          }
+        }catch(error){
+          console.error('[EVOLUTION SEND]',error.message);
+          return new Response(JSON.stringify({error:error.message}),{status:502,headers:{'content-type':'application/json'}});
+        }
+      }
       try{const payload=JSON.parse(init.body);
         if(payload?.type==='text'&&typeof payload?.text?.body==='string'){
           payload.text.body=normalizeUrdu(payload.text.body);if(ctx)ctx.aiReply=payload.text.body;console.log('[ZARA URDU FINAL]',JSON.stringify({text:payload.text.body}));
@@ -241,6 +270,6 @@ module.exports=async(req,res)=>{
   const body=req?.body&&typeof req.body==='object'?req.body:{};
   const message=body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   const contact=body?.entry?.[0]?.changes?.[0]?.value?.contacts?.find(c=>c?.wa_id===message?.from)||body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
-  const ctx={phone:message?.from||'',msgId:message?.id||'',customerName:(contact?.profile?.name||'').trim(),userText:typeof message?.text?.body==='string'?message.text.body:'',aiReply:'',remembered:false,catalogueChecked:false,catalogue:null,catalogueImagesSent:false,orderSheetWriteAttempted:false,orderSheetWriteSucceeded:false};
+  const ctx={phone:message?.from||'',msgId:message?.id||'',customerName:(contact?.profile?.name||'').trim(),userText:typeof message?.text?.body==='string'?message.text.body:'',aiReply:'',remembered:false,catalogueChecked:false,catalogue:null,catalogueImagesSent:false,orderSheetWriteAttempted:false,orderSheetWriteSucceeded:false,provider:String(req.headers?.['x-easyreach-provider']||'meta').toLowerCase(),instance:String(req.headers?.['x-easyreach-instance']||'').trim(),tenantId:String(req.headers?.['x-easyreach-tenant-id']||'').trim()};
   return memoryContext.run(ctx,()=>originalHandler(req,res));
 };
