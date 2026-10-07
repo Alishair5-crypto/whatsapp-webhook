@@ -749,12 +749,15 @@ Remember full conversation. Use context. Never repeat answered questions.
         history.push({ role: 'model', parts: [{ text: aiReply }] });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
-        chatHistories.set(fromNumber, history);
-        dbSave(DATABASE_URL, fromNumber, customerName, history).catch(() => {});
+        const conversationKey = PROVIDER === 'evolution'
+          ? `evolution:${EASYREACH_TENANT_ID}:${EVOLUTION_INSTANCE}:${fromNumber}`
+          : fromNumber;
+        chatHistories.set(conversationKey, history);
+        if (DATABASE_URL && PROVIDER !== 'evolution') dbSave(DATABASE_URL, fromNumber, customerName, history).catch(() => {});
 
         let voiceSentSuccess = false;
 
-        if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+        if (isAudioIncoming && ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID && ((PROVIDER === 'evolution' && EVOLUTION_INSTANCE && EASYREACH_TENANT_ID) || (WHATSAPP_TOKEN && PHONE_NUMBER_ID))) {
           try {
             console.log('[STEP C] Converting to voice via ElevenLabs...');
             const ttsRes = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`, {
@@ -770,32 +773,47 @@ Remember full conversation. Use context. Never repeat answered questions.
 
             if (ttsRes.ok) {
               const arrayBuffer = await ttsRes.arrayBuffer();
-              const mediaFormData = new globalThis.FormData();
-              const audioBlob = new globalThis.Blob([arrayBuffer], { type:'audio/mpeg' });
-              mediaFormData.append('messaging_product','whatsapp');
-              mediaFormData.append('file',audioBlob,'voice.mp3');
-              mediaFormData.append('type','audio/mpeg');
 
-              const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
-                method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`},body:mediaFormData
-              });
-              const uploadData = await uploadRes.json();
-
-              if (uploadData?.id) {
-                const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
-                  method:'POST',
-                  headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},
-                  body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:fromNumber,type:'audio',audio:{id:uploadData.id}})
+              if (PROVIDER === 'evolution') {
+                const evolution = require('./lib/evolution-whatsapp');
+                const audioBase64 = Buffer.from(arrayBuffer).toString('base64');
+                const responseData = await evolution.sendAudio({
+                  instance: EVOLUTION_INSTANCE,
+                  to: fromNumber,
+                  audio: `data:audio/mpeg;base64,${audioBase64}`
                 });
-                if (sendVoiceRes.ok) {
+                if (responseData) {
                   voiceSentSuccess = true;
-                  console.log('[STEP C SUCCESS] Voice note sent!');
-                } else {
-                  const errBody = await sendVoiceRes.text();
-                  console.error('[STEP C FAIL] Voice send:', errBody.slice(0,150));
+                  console.log('[STEP C SUCCESS] Evolution voice note sent!');
                 }
               } else {
-                console.error('[STEP C FAIL] Upload failed:', JSON.stringify(uploadData));
+                const mediaFormData = new globalThis.FormData();
+                const audioBlob = new globalThis.Blob([arrayBuffer], { type:'audio/mpeg' });
+                mediaFormData.append('messaging_product','whatsapp');
+                mediaFormData.append('file',audioBlob,'voice.mp3');
+                mediaFormData.append('type','audio/mpeg');
+
+                const uploadRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/media`, {
+                  method:'POST',headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`},body:mediaFormData
+                });
+                const uploadData = await uploadRes.json();
+
+                if (uploadData?.id) {
+                  const sendVoiceRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+                    method:'POST',
+                    headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},
+                    body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:fromNumber,type:'audio',audio:{id:uploadData.id}})
+                  });
+                  if (sendVoiceRes.ok) {
+                    voiceSentSuccess = true;
+                    console.log('[STEP C SUCCESS] Voice note sent!');
+                  } else {
+                    const errBody = await sendVoiceRes.text();
+                    console.error('[STEP C FAIL] Voice send:', errBody.slice(0,150));
+                  }
+                } else {
+                  console.error('[STEP C FAIL] Upload failed:', JSON.stringify(uploadData));
+                }
               }
             } else if (ttsRes.status === 429) {
               console.warn('[STEP C] ElevenLabs quota 429 → text fallback');
@@ -807,14 +825,24 @@ Remember full conversation. Use context. Never repeat answered questions.
           }
         }
 
-        if (!voiceSentSuccess && WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
-          const textRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
-            method:'POST',
-            headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},
-            body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:fromNumber,type:'text',text:{preview_url:false,body:aiReply}})
-          });
-          if (textRes.ok) console.log('[STEP D SUCCESS] Text message sent.');
-          else { const errBody=await textRes.text(); console.error('[STEP D FAIL]:',errBody.slice(0,150)); }
+        if (!voiceSentSuccess) {
+          if (PROVIDER === 'evolution' && EVOLUTION_INSTANCE && EASYREACH_TENANT_ID) {
+            try {
+              const evolution = require('./lib/evolution-whatsapp');
+              await evolution.sendText({instance:EVOLUTION_INSTANCE,to:fromNumber,text:aiReply});
+              console.log('[STEP D SUCCESS] Evolution text message sent.');
+            } catch (error) {
+              console.error('[STEP D FAIL] Evolution text:', error.message);
+            }
+          } else if (WHATSAPP_TOKEN && PHONE_NUMBER_ID) {
+            const textRes = await fetch(`https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`, {
+              method:'POST',
+              headers:{Authorization:`Bearer ${WHATSAPP_TOKEN}`,'Content-Type':'application/json'},
+              body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:fromNumber,type:'text',text:{preview_url:false,body:aiReply}})
+            });
+            if (textRes.ok) console.log('[STEP D SUCCESS] Text message sent.');
+            else { const errBody=await textRes.text(); console.error('[STEP D FAIL]:',errBody.slice(0,150)); }
+          }
         }
       } catch (err) {
         console.error('[FATAL ERROR]:', err.message, err.stack);
