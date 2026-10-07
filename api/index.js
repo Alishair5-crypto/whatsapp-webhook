@@ -156,7 +156,7 @@ async function recoverConfirmedOrder(ctx){
   if(!process.env.GOOGLE_SHEETS_ID||!process.env.GOOGLE_SA_EMAIL||!process.env.GOOGLE_SA_KEY)return null;
   if(/\[ORDER:/i.test(ctx.aiReply||''))return null;
   try{
-    const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText);
+    const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText,ctx.tenantId,ctx.provider);
     const prompt=`Extract an order ONLY if the customer has explicitly confirmed every required field. Required: name, product, qty, price, payment (COD/JazzCash/EasyPaisa), full delivery address, city. Never infer missing fields. Return ONLY JSON or null with keys name, product, qty, price, payment, address, city. Customer message: ${ctx.userText}\nZara reply: ${ctx.aiReply}\nRelevant saved conversation context: ${String(memory||'').slice(-7000)}`;
     const response=await originalFetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({system_instruction:{parts:[{text:'You are a strict order validator. Never guess. Return JSON only.'}]},contents:[{role:'user',parts:[{text:prompt}]}],generationConfig:{temperature:0,maxOutputTokens:300,responseMimeType:'application/json'}})});
     if(!response.ok)return null;
@@ -197,7 +197,7 @@ async function injectMemoryIntoAI(url,init,ctx){
   if(Array.isArray(payload.contents))console.log('[GEMINI SANITIZE] contents sanitized; unsupported audio metadata removed');
   return {...init,body:JSON.stringify(payload)};
 }
-async function maybeRemember(ctx){if(!ctx||ctx.remembered||!ctx.phone||!ctx.msgId||!ctx.userText||!ctx.aiReply)return;ctx.remembered=true;await remember(process.env.DATABASE_URL||'',ctx.phone,ctx.msgId,ctx.userText,ctx.aiReply,ctx.customerName)}
+async function maybeRemember(ctx){if(!ctx||ctx.remembered||!ctx.phone||!ctx.msgId||!ctx.userText||!ctx.aiReply)return;ctx.remembered=true;await remember(process.env.DATABASE_URL||'',ctx.phone,ctx.msgId,ctx.userText,ctx.aiReply,ctx.customerName,ctx.tenantId,ctx.provider)}
 function rotateProducts(products,phone){if(!Array.isArray(products)||products.length<2||!phone)return products||[];const previous=catalogueRotation.get(phone)||0;const offset=previous%products.length;catalogueRotation.set(phone,(offset+1)%products.length);return products.slice(offset).concat(products.slice(0,offset))}
 async function sendCatalogueImages(ctx,headers){
   if(!ctx?.catalogue?.wantsImages||!ctx.catalogue.products?.length||ctx.catalogueImagesSent)return;
