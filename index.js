@@ -283,6 +283,9 @@ module.exports = async (req, res) => {
   const DATABASE_URL        = (process.env.DATABASE_URL        || '').trim();
   // Google Sheets sync uses the existing Apps Script Web App.
   // No service-account email/private key is required.
+  const PROVIDER = String(req.headers?.['x-easyreach-provider'] || 'meta').toLowerCase();
+  const EVOLUTION_INSTANCE = String(req.headers?.['x-easyreach-instance'] || '').trim();
+
   const GOOGLE_SHEETS_WEBHOOK_URL = (
     process.env.GOOGLE_SHEETS_WEBHOOK_URL ||
     'https://script.google.com/macros/s/AKfycbzHPmIPuSj0FILOn54WPo57CtzrJZssQqGvSTojhvTuVMYTNe5tQMr_3bU_uOHHb4QlsA/exec'
@@ -477,8 +480,12 @@ Remember full conversation. Use context. Never repeat answered questions.
     const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
 
     if (!messages.length) return res.status(200).send('EVENT_RECEIVED');
-    if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
+    if (PROVIDER !== 'evolution' && (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID)) {
       console.error('[CONFIG] Missing WHATSAPP_TOKEN or PHONE_NUMBER_ID');
+      return res.status(200).send('EVENT_RECEIVED');
+    }
+    if (PROVIDER === 'evolution' && !EVOLUTION_INSTANCE) {
+      console.error('[CONFIG] Missing x-easyreach-instance for Evolution provider');
       return res.status(200).send('EVENT_RECEIVED');
     }
 
@@ -501,7 +508,7 @@ Remember full conversation. Use context. Never repeat answered questions.
 
         if (message.type === 'text') {
           userMessageText = fixCities(message.text?.body || '');
-        } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN) {
+        } else if (isAudioIncoming && GROQ_API_KEY && WHATSAPP_TOKEN && PROVIDER !== 'evolution') {
           console.log('[STEP A] Fetching audio from Meta...');
           const mediaId = message.audio?.id || message.voice?.id;
 
