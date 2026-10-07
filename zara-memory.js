@@ -7,6 +7,12 @@ const schemaReady = new Map();
 const cache = new Map();
 const CACHE_TTL_MS = 30_000;
 
+function tenantKey(tenantId, provider) {
+  const t = clean(tenantId, 160) || 'legacy';
+  const p = clean(provider, 40).toLowerCase() || 'meta';
+  return `${p}:${t}`;
+}
+
 function getSql(dbUrl) {
   if (!dbUrl || !dbUrl.startsWith('postgres')) return null;
   try {
@@ -66,11 +72,11 @@ function clean(value, max = 300) {
   return value.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 }
 
-function cacheKey(phone) { return `m:${phone}`; }
+function cacheKey(phone, tenantId, provider) { return `m:${tenantKey(tenantId, provider)}:${phone}`; }
 
-async function getMemoryContext(dbUrl, phone, query) {
+async function getMemoryContext(dbUrl, phone, query, tenantId = '', provider = 'meta') {
   if (!phone) return '';
-  const key = cacheKey(phone);
+  const key = cacheKey(phone, tenantId, provider);
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.text;
 
@@ -78,20 +84,34 @@ async function getMemoryContext(dbUrl, phone, query) {
   if (!sql || !(await ensureSchema(dbUrl))) return '';
 
   try {
-    const profile = await sql`
+    const scoped = tenantId ? await sql`
+      SELECT memory_key, memory_value, memory_type
+      FROM easyreach_customer_memory
+      WHERE tenant_id = ${tenantId} AND provider = ${provider} AND phone_number = ${phone}
+      ORDER BY updated_at DESC
+      LIMIT 40
+    ` : await sql`
       SELECT memory_key, memory_value, memory_type
       FROM zara_customer_memory
       WHERE phone_number = ${phone}
       ORDER BY updated_at DESC
       LIMIT 40
     `;
-    const events = await sql`
+    const scopedEvents = tenantId ? await sql`
+      SELECT event_type, summary, occurred_at
+      FROM easyreach_memory_events
+      WHERE tenant_id = ${tenantId} AND provider = ${provider} AND phone_number = ${phone}
+      ORDER BY occurred_at DESC
+      LIMIT 12
+    ` : await sql`
       SELECT event_type, summary, occurred_at
       FROM zara_memory_events
       WHERE phone_number = ${phone}
       ORDER BY occurred_at DESC
       LIMIT 12
     `;
+    const profile = scoped;
+    const events = scopedEvents;
 
     const lines = [];
     for (const row of profile || []) lines.push(`- ${row.memory_key}: ${clean(row.memory_value)}`);
@@ -134,7 +154,7 @@ function explicitFacts(text, contactName) {
   return facts;
 }
 
-async function remember(dbUrl, phone, messageId, customerText, aiReply, contactName) {
+async function remember(dbUrl, phone, messageId, customerText, aiReply, contactName, tenantId = '', provider = 'meta') {
   if (!phone || !messageId || !customerText || !aiReply) return;
   const sql = getSql(dbUrl);
   if (!sql || !(await ensureSchema(dbUrl))) return;
@@ -142,29 +162,54 @@ async function remember(dbUrl, phone, messageId, customerText, aiReply, contactN
   try {
     const facts = explicitFacts(customerText, contactName);
     for (const fact of facts) {
+      if (tenantId) {
+        await sql`
+          INSERT INTO easyreach_customer_memory
+            (tenant_id, provider, phone_number, memory_key, memory_value, memory_type, confidence, source_message_id)
+          VALUES
+            (${tenantId}, ${provider}, ${phone}, ${fact.key}, ${fact.value}, ${fact.type}, 1, ${messageId})
+          ON CONFLICT (tenant_id, provider, phone_number, memory_key) DO UPDATE SET
+            memory_value = EXCLUDED.memory_value,
+            memory_type = EXCLUDED.memory_type,
+            confidence = EXCLUDED.confidence,
+            source_message_id = EXCLUDED.source_message_id,
+            updated_at = NOW()
+        `;
+      } else {
+        await sql`
+          INSERT INTO zara_customer_memory
+            (phone_number, memory_key, memory_value, memory_type, confidence, source_message_id)
+          VALUES
+            (${phone}, ${fact.key}, ${fact.value}, ${fact.type}, 1, ${messageId})
+          ON CONFLICT (phone_number, memory_key) DO UPDATE SET
+            memory_value = EXCLUDED.memory_value,
+            memory_type = EXCLUDED.memory_type,
+            confidence = EXCLUDED.confidence,
+            source_message_id = EXCLUDED.source_message_id,
+            updated_at = NOW()
+        `;
+      }
+    }
+
+    if (tenantId) {
       await sql`
-        INSERT INTO zara_customer_memory
-          (phone_number, memory_key, memory_value, memory_type, confidence, source_message_id)
+        INSERT INTO easyreach_memory_events
+          (tenant_id, provider, phone_number, event_type, summary, source_message_id)
         VALUES
-          (${phone}, ${fact.key}, ${fact.value}, ${fact.type}, 1, ${messageId})
-        ON CONFLICT (phone_number, memory_key) DO UPDATE SET
-          memory_value = EXCLUDED.memory_value,
-          memory_type = EXCLUDED.memory_type,
-          confidence = EXCLUDED.confidence,
-          source_message_id = EXCLUDED.source_message_id,
-          updated_at = NOW()
+          (${tenantId}, ${provider}, ${phone}, 'conversation', ${clean(customerText, 500)}, ${messageId})
+        ON CONFLICT (tenant_id, provider, phone_number, source_message_id, event_type) DO NOTHING
+      `;
+    } else {
+      await sql`
+        INSERT INTO zara_memory_events
+          (phone_number, event_type, summary, source_message_id)
+        VALUES
+          (${phone}, 'conversation', ${clean(customerText, 500)}, ${messageId})
+        ON CONFLICT (phone_number, source_message_id, event_type) DO NOTHING
       `;
     }
 
-    await sql`
-      INSERT INTO zara_memory_events
-        (phone_number, event_type, summary, source_message_id)
-      VALUES
-        (${phone}, 'conversation', ${clean(customerText, 500)}, ${messageId})
-      ON CONFLICT (phone_number, source_message_id, event_type) DO NOTHING
-    `;
-
-    cache.delete(cacheKey(phone));
+    cache.delete(cacheKey(phone, tenantId, provider));
     console.log('[MEMORY WRITE] persisted:', phone.slice(0, 4) + '***');
   } catch (e) {
     console.error('[MEMORY WRITE]', e.message);
