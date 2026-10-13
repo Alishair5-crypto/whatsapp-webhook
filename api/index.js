@@ -6,7 +6,6 @@ const { getCatalogueForMessage, primaryImage } = require('../catalogue/agent');
 const { recordSentCandidate, getRecentCandidates, fetchCandidateImagePart } = require('../catalogue/image-selection');
 const originalFetch = globalThis.fetch;
 const memoryContext = new AsyncLocalStorage();
-const catalogueRotation = new Map();
 
 // Conservative Urdu cleanup only. Product/catalogue facts remain authoritative.
 const URDU_NORMALIZATION = [
