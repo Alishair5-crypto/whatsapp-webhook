@@ -225,9 +225,12 @@ async function injectMemoryIntoAI(url,init,ctx){
   if(Array.isArray(payload.contents)) {
     console.log('[GEMINI SANITIZE] contents sanitized; unsupported audio metadata removed');
     if (ctx.isIncomingImage) {
-      const imageParts = payload.contents.reduce((count, item) => count + (Array.isArray(item?.parts) ? item.parts.filter(part => part?.inlineData && typeof part.inlineData.data === 'string').length : 0), 0);
-      const customerImage = imageParts > 0 ? 1 : 0;
-      const candidateImages = Math.max(0, imageParts - customerImage);
+      const lastUserContent = [...payload.contents].reverse().find(item => item?.role === 'user' && Array.isArray(item.parts));
+      const imageParts = Array.isArray(lastUserContent?.parts)
+        ? lastUserContent.parts.filter(part => part?.inlineData && typeof part.inlineData.data === 'string').length
+        : 0;
+      const candidateImages = Math.min(ctx.imageCandidateParts?.length || 0, imageParts);
+      const customerImage = Math.max(0, imageParts - candidateImages);
       console.log(`[gemini-request] images=${imageParts} customer_image=${customerImage} candidate_images=${candidateImages} payload_prepared=true`);
     }
   }
