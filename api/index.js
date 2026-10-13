@@ -184,6 +184,11 @@ async function injectMemoryIntoAI(url,init,ctx){
   if(!ctx||!init||typeof init.body!=='string')return init;
   let payload;try{payload=JSON.parse(init.body)}catch(_){return init}
   if(!ctx.phone)return init;
+  if (ctx.isIncomingImage && !ctx.imageCandidatesLoaded) {
+    ctx.imageCandidatesLoaded = true;
+    ctx.imageCandidates = await getRecentCandidates(process.env.DATABASE_URL||'', ctx.phone);
+    if (ctx.imageCandidates.length) console.log('[IMAGE SELECTION] Recent sent candidates found:', ctx.imageCandidates.length);
+  }
   if (Array.isArray(payload.contents) && ctx.isIncomingImage && Array.isArray(ctx.imageCandidates) && ctx.imageCandidates.length) {
     if (!ctx.imageCandidatePartsLoaded) {
       ctx.imageCandidatePartsLoaded = true;
@@ -273,6 +278,5 @@ module.exports=async(req,res)=>{
   const message=body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   const contact=body?.entry?.[0]?.changes?.[0]?.value?.contacts?.find(c=>c?.wa_id===message?.from)||body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
   const ctx={phone:message?.from||'',msgId:message?.id||'',customerName:(contact?.profile?.name||'').trim(),userText:typeof message?.text?.body==='string'?message.text.body:'',aiReply:'',remembered:false,catalogueChecked:false,catalogue:null,catalogueImagesSent:false,orderSheetWriteAttempted:false,orderSheetWriteSucceeded:false,isIncomingImage:message?.type==='image',imageCandidates:[],imageCandidatePartsLoaded:false,imageCandidateParts:[]};
-  if (ctx.isIncomingImage && ctx.phone) ctx.imageCandidates = await getRecentCandidates(process.env.DATABASE_URL||'',ctx.phone);
   return memoryContext.run(ctx,()=>originalHandler(req,res));
 };
