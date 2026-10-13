@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const { getMemoryContext, remember } = require('../zara-memory');
-const { getCatalogueForMessage, allImages } = require('../catalogue/agent');
+const { getCatalogueForMessage, allImages, primaryImage } = require('../catalogue/agent');
 const { recordSentCandidate, getRecentCandidates, fetchCandidateImagePart } = require('../catalogue/image-selection');
 const originalFetch = globalThis.fetch;
 const memoryContext = new AsyncLocalStorage();
@@ -210,8 +210,25 @@ async function injectMemoryIntoAI(url,init,ctx){
   }
   if(query)ctx.userText=query.replace(/^Customer name:\s*[^\n]+\n/i,'').trim();
   if(!ctx.catalogueChecked&&ctx.userText){ctx.catalogueChecked=true;ctx.catalogue=await getCatalogueForMessage(process.env.DATABASE_URL||'',ctx.userText)}
+  if (!Array.isArray(ctx.selectedCatalogueImages) && ctx.catalogue?.wantsImages) {
+    const requested = Number(ctx.catalogue.requestedImageCount);
+    const limit = Number.isInteger(requested) && requested > 0 ? requested : 5;
+    const seenUrls = new Set();
+    ctx.selectedCatalogueImages = (ctx.catalogue.products || []).map(product => {
+      const url = primaryImage(product);
+      if (!url || !/^https:\/\//i.test(url) || seenUrls.has(url)) return null;
+      seenUrls.add(url);
+      const price = Number(product?.price);
+      const priceText = Number.isFinite(price) ? `${product?.currency || 'PKR'} ${price.toLocaleString('en-PK')}` : '';
+      const caption = `${product?.name || 'Product'}${priceText ? ` — ${priceText}` : ''}`.slice(0, 1024);
+      return { id: String(product?.id ?? product?.product_id ?? ''), url, caption, product };
+    }).filter(Boolean).slice(0, limit);
+    console.log(`[CATALOGUE SELECT] selectedIds=${ctx.selectedCatalogueImages.map(item => item.id || item.product?.name || 'unknown').join(',')} count=${ctx.selectedCatalogueImages.length}`);
+  }
   const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText);
-  const catalogueContext=ctx.catalogue?.context||'';
+  const catalogueContext = ctx.catalogue?.wantsImages
+    ? `\n\n=== EXACT SELECTED CATALOGUE IMAGE SET ===\nThese are the ONLY designs whose images are being sent. Use only these IDs/names when describing the image batch; do not mention any other catalogue design as selected.\n${(ctx.selectedCatalogueImages || []).map((item, index) => `${index + 1}. ID: ${item.id || 'not available'} | ${item.caption}`).join('\n')}\nIf no selected image is listed, say photos are unavailable; do not invent IDs.\n`
+    : (ctx.catalogue?.context || '');
   strengthenUrduPrompt(payload);
   if(Array.isArray(payload.contents)){
     const system=payload.system_instruction?.parts?.[0]?.text;
@@ -239,16 +256,18 @@ async function injectMemoryIntoAI(url,init,ctx){
 async function maybeRemember(ctx){if(!ctx||ctx.remembered||!ctx.phone||!ctx.msgId||!ctx.userText||!ctx.aiReply)return;ctx.remembered=true;await remember(process.env.DATABASE_URL||'',ctx.phone,ctx.msgId,ctx.userText,ctx.aiReply,ctx.customerName)}
 function rotateProducts(products,phone){if(!Array.isArray(products)||products.length<2||!phone)return products||[];const previous=catalogueRotation.get(phone)||0;const offset=previous%products.length;catalogueRotation.set(phone,(offset+1)%products.length);return products.slice(offset).concat(products.slice(0,offset))}
 async function sendCatalogueImages(ctx,headers){
-  if(!ctx?.catalogue?.wantsImages||!ctx.catalogue.products?.length||ctx.catalogueImagesSent)return;
+  if(!ctx?.catalogue?.wantsImages||ctx.catalogueImagesSent)return;
   if(!ctx.phone||!process.env.WHATSAPP_TOKEN||!process.env.PHONE_NUMBER_ID)return;
-  const products=rotateProducts(ctx.catalogue.products,ctx.phone);const selected=[];const urls=new Set();
-  for(const product of products){const productUrls=allImages(product);for(const url of productUrls){if(!url||urls.has(url)||!/^https:\/\//i.test(url))continue;urls.add(url);selected.push({product,url})}}
-  if(!selected.length)return;ctx.catalogueImagesSent=true;console.log('[CATALOGUE] Sending relevant image set:',selected.length,'images');
+  const selected = Array.isArray(ctx.selectedCatalogueImages) ? ctx.selectedCatalogueImages : [];
+  if(!selected.length){console.warn('[CATALOGUE] No verified image selection available; refusing to pick a second, divergent set');return}
+  ctx.catalogueImagesSent=true;console.log('[CATALOGUE] Sending exact selected image set:',selected.length,'images');
   const batchId=crypto.randomUUID();
   let sentCount=0;
   let savedCount=0;
-  for(const item of selected){try{const price=Number(item.product?.price);const priceText=Number.isFinite(price)?`${item.product?.currency||'PKR'} ${price.toLocaleString('en-PK')}`:'';const caption=`${item.product?.name||'Product'}${priceText?` — ${priceText}`:''}`.slice(0,1024);const response=await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`,{method:'POST',headers,body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:ctx.phone,type:'image',image:{link:item.url,caption}})});if(response.ok){sentCount++;const saved=await recordSentCandidate(process.env.DATABASE_URL||'',ctx.phone,batchId,item.product,item.url);if(saved)savedCount++;else console.warn('[candidate-save] failed for one sent image; check DATABASE_URL, schema, and image-host allowlist')}else console.error('[CATALOGUE IMAGE] Send failed:',(await response.text()).slice(0,300))}catch(error){console.error('[CATALOGUE IMAGE] Error:',error.message)}}
-  console.log(`[candidate-save] batch=${batchId.slice(0,8)} sent=${sentCount} saved=${savedCount} db_configured=${Boolean(process.env.DATABASE_URL)}`);
+  const sentIds=[];
+  const savedIds=[];
+  for(const item of selected){try{const response=await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`,{method:'POST',headers,body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:ctx.phone,type:'image',image:{link:item.url,caption:item.caption}})});if(response.ok){sentCount++;const id=item.id||item.product?.id||item.product?.name||'unknown';sentIds.push(String(id));console.log(`[CATALOGUE IMAGE SENT] id=${id}`);const saved=await recordSentCandidate(process.env.DATABASE_URL||'',ctx.phone,batchId,item.product,item.url);if(saved){savedCount++;savedIds.push(String(id))}else console.warn(`[candidate-save] failed id=${id}; check DATABASE_URL, schema, and image-host allowlist`)}else console.error('[CATALOGUE IMAGE] Send failed:',(await response.text()).slice(0,300))}catch(error){console.error('[CATALOGUE IMAGE] Error:',error.message)}}
+  console.log(`[candidate-save] batch=${batchId.slice(0,8)} sentIds=${sentIds.join(',')} savedIds=${savedIds.join(',')} sent=${sentCount} saved=${savedCount} db_configured=${Boolean(process.env.DATABASE_URL)}`);
 }
 if(originalFetch&&!globalThis.__zaraVoiceFetchPatched){
   globalThis.__zaraVoiceFetchPatched=true;
