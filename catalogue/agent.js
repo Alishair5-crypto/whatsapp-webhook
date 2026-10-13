@@ -104,15 +104,16 @@ function buildContext(rows,filters) {
   return `\n\n=== LIVE CATALOGUE RESULT (DATABASE — AUTHORITATIVE) ===\nUse ONLY these live catalogue records for product facts. Never invent product names, prices, colors, stock, or images. ${imageInstruction}\nFilters: ${JSON.stringify(filters)}\n${lines.join('\n')}\n`;
 }
 function prepareImageLimitedProducts(products, requestedCount) {
-  if (!Array.isArray(products) || !products.length || !requestedCount || requestedCount >= 50) return products;
-  const out = []; let remaining = requestedCount;
+  if (!Array.isArray(products) || !products.length || !requestedCount) return products;
+  const out = [];
+  const seenUrls = new Set();
   for (const product of products) {
-    if (remaining <= 0) break;
-    const urls = allImages(product);
-    if (!urls.length) continue;
-    const limited = { ...product, images: urls.slice(0, remaining).map((url, index) => ({ url, isPrimary: index === 0 })) };
-    out.push(limited);
-    remaining -= limited.images.length;
+    const url = primaryImage(product);
+    if (!url || seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    // A requested design means one distinct catalogue product with one representative image.
+    out.push({ ...product, images: [{ url, isPrimary: true }] });
+    if (requestedCount < 50 && out.length >= requestedCount) break;
   }
   return out;
 }
@@ -130,4 +131,4 @@ async function getCatalogueForMessage(dbUrl,text) {
     return {filters:extractFilters(text),products:[],context:'\n\n=== LIVE CATALOGUE RESULT ===\nCatalogue lookup is temporarily unavailable. Do NOT invent product facts. Continue with a brief honest response and ask the customer to try again.\n',wantsImages:false,requestedImageCount:0,completeCatalogue:false};
   }
 }
-module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,isOrderIntent,extractRequestedImageCount,extractFilters,getCatalogueForMessage,primaryImage,allImages,normalizeImageUrl,isCompleteCatalogueRequest,buildContext};
+module.exports={normalizeText,isCatalogueIntent,wantsCatalogueImages,isOrderIntent,extractRequestedImageCount,extractFilters,getCatalogueForMessage,primaryImage,allImages,normalizeImageUrl,isCompleteCatalogueRequest,buildContext,prepareImageLimitedProducts};
