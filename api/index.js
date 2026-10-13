@@ -2,7 +2,7 @@
 const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const { getMemoryContext, remember } = require('../zara-memory');
-const { getCatalogueForMessage, allImages, primaryImage } = require('../catalogue/agent');
+const { getCatalogueForMessage, primaryImage } = require('../catalogue/agent');
 const { recordSentCandidate, getRecentCandidates, fetchCandidateImagePart } = require('../catalogue/image-selection');
 const originalFetch = globalThis.fetch;
 const memoryContext = new AsyncLocalStorage();
@@ -254,7 +254,6 @@ async function injectMemoryIntoAI(url,init,ctx){
   return {...init,body:JSON.stringify(payload)};
 }
 async function maybeRemember(ctx){if(!ctx||ctx.remembered||!ctx.phone||!ctx.msgId||!ctx.userText||!ctx.aiReply)return;ctx.remembered=true;await remember(process.env.DATABASE_URL||'',ctx.phone,ctx.msgId,ctx.userText,ctx.aiReply,ctx.customerName)}
-function rotateProducts(products,phone){if(!Array.isArray(products)||products.length<2||!phone)return products||[];const previous=catalogueRotation.get(phone)||0;const offset=previous%products.length;catalogueRotation.set(phone,(offset+1)%products.length);return products.slice(offset).concat(products.slice(0,offset))}
 async function sendCatalogueImages(ctx,headers){
   if(!ctx?.catalogue?.wantsImages||ctx.catalogueImagesSent)return;
   if(!ctx.phone||!process.env.WHATSAPP_TOKEN||!process.env.PHONE_NUMBER_ID)return;
