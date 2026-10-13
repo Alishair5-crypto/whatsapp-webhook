@@ -562,7 +562,9 @@ Remember full conversation. Use context. Never repeat answered questions.
           } else {
             try {
               const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
-                headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+                headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+                signal: AbortSignal.timeout(8000),
+                redirect: 'error'
               });
               if (!mediaRes.ok) {
                 imageProcessingFailed = true;
@@ -571,12 +573,26 @@ Remember full conversation. Use context. Never repeat answered questions.
                 const mediaData = await mediaRes.json();
                 const mimeType = String(mediaData?.mime_type || '').toLowerCase();
                 const fileSize = Number(mediaData?.file_size || 0);
-                if (!mediaData?.url || !['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) || fileSize > 10 * 1024 * 1024) {
+                let mediaUrl = null;
+                let safeMediaHost = false;
+                try {
+                  mediaUrl = new URL(mediaData?.url || '');
+                  safeMediaHost = mediaUrl.protocol === 'https:' &&
+                    !mediaUrl.username && !mediaUrl.password &&
+                    (!mediaUrl.port || mediaUrl.port === '443') &&
+                    (mediaUrl.hostname === 'lookaside.fbsbx.com' || mediaUrl.hostname.endsWith('.fbcdn.net'));
+                } catch (_) {
+                  safeMediaHost = false;
+                }
+                if (!safeMediaHost || !['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) ||
+                    !Number.isSafeInteger(fileSize) || fileSize <= 0 || fileSize > 10 * 1024 * 1024) {
                   imageProcessingFailed = true;
-                  console.error('[IMAGE FAIL] Unsupported or oversized image metadata');
+                  console.error('[IMAGE FAIL] Unsafe URL or unsupported/invalid image metadata');
                 } else {
-                  const imageRes = await fetch(mediaData.url, {
-                    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` }
+                  const imageRes = await fetch(mediaUrl.href, {
+                    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+                    signal: AbortSignal.timeout(8000),
+                    redirect: 'error'
                   });
                   if (!imageRes.ok) {
                     imageProcessingFailed = true;
