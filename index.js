@@ -625,8 +625,8 @@ Remember full conversation. Use context. Never repeat answered questions.
                       if (!imageProcessingFailed) {
                         const imageBuffer = Buffer.concat(imageChunks, imageBytes);
                         userImagePart = {
-                          inline_data: {
-                            mime_type: mimeType,
+                          inlineData: {
+                            mimeType,
                             data: imageBuffer.toString('base64')
                           }
                         };
