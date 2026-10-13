@@ -154,7 +154,7 @@ async function getServiceAccountToken(email,key){
     const header=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));
     const payload=b64(JSON.stringify({iss:email,scope:'https://www.googleapis.com/auth/spreadsheets',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
     const signer=crypto.createSign('RSA-SHA256');signer.update(`${header}.${payload}`);
-    const signature=signer.sign(key.replace(/\\n/g,'\n'),'base64url');
+    const signature=signer.sign(key.replace(/\n/g,'\n'),'base64url');
     const response=await originalFetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${header}.${payload}.${signature}`});
     const data=await response.json().catch(()=>null);return data?.access_token||null;
   }catch(error){console.error('[ORDER RECOVERY TOKEN]',error.message);return null;}
@@ -203,8 +203,8 @@ async function injectMemoryIntoAI(url,init,ctx){
     }
     const lastContent = payload.contents[payload.contents.length - 1];
     if (lastContent && lastContent.role === 'user' && Array.isArray(lastContent.parts) && ctx.imageCandidateParts?.length) {
-      const names = ctx.imageCandidateParts.map((entry, index) => `${index + 1}. ${entry.candidate.name}${entry.candidate.id ? ` (catalogue ID: ${entry.candidate.id})` : ''}`).join('\\n');
-      const instruction = `\\n\\nRECENTLY SENT CATALOGUE CANDIDATES (visual reference images attached after this text):\\n${names}\\nCompare the customer's attached photo against these candidate images. If one clearly matches, name that exact catalogue design and ID when available. If no clear match, say so and ask one short clarification. Do not guess. Reply in the customer's language.`;
+      const names = ctx.imageCandidateParts.map((entry, index) => `${index + 1}. ${entry.candidate.name}${entry.candidate.id ? ` (catalogue ID: ${entry.candidate.id})` : ''}`).join('\n');
+      const instruction = `\n\nRECENTLY SENT CATALOGUE CANDIDATES (visual reference images attached after this text):\n${names}\nCompare the customer's attached photo against these candidate images. If one clearly matches, name that exact catalogue design and ID when available. If no clear match, say so and ask one short clarification. Do not guess. Reply in the customer's language.`;
       const alreadyAdded = lastContent.parts.some(part => part?.text?.includes('RECENTLY SENT CATALOGUE CANDIDATES'));
       const textPart = lastContent.parts.find(part => typeof part?.text === 'string');
       if (textPart && !alreadyAdded) textPart.text += instruction;
@@ -215,7 +215,7 @@ async function injectMemoryIntoAI(url,init,ctx){
   try{const last=payload?.contents?.[payload.contents.length-1]?.parts?.[0]?.text;if(typeof last==='string')query=last}catch(_){}
   if(!query){try{const last=payload?.messages?.[payload.messages.length-1]?.content;if(typeof last==='string')query=last}catch(_){}
   }
-  if(query)ctx.userText=query.replace(/^Customer name:\s*[^\n]+\n/i,'').trim();
+  if(query)ctx.userText=query.replace(/^Customer name:\s*[^\n]+\n/i,'').replace(/\n\nRECENTLY SENT CATALOGUE CANDIDATES[\s\S]*$/,'').trim();
   if(!ctx.catalogueChecked&&ctx.userText){ctx.catalogueChecked=true;ctx.catalogue=await getCatalogueForMessage(process.env.DATABASE_URL||'',ctx.userText)}
   const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText);
   const catalogueContext=ctx.catalogue?.context||'';
