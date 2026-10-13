@@ -200,9 +200,9 @@ async function injectMemoryIntoAI(url,init,ctx){
     if (lastContent && lastContent.role === 'user' && Array.isArray(lastContent.parts) && ctx.imageCandidateParts?.length) {
       const names = ctx.imageCandidateParts.map((entry, index) => `${index + 1}. ${entry.candidate.name}${entry.candidate.id ? ` (catalogue ID: ${entry.candidate.id})` : ''}`).join('\\n');
       const instruction = `\\n\\nRECENTLY SENT CATALOGUE CANDIDATES (visual reference images attached after this text):\\n${names}\\nCompare the customer's attached photo against these candidate images. If one clearly matches, name that exact catalogue design and ID when available. If no clear match, say so and ask one short clarification. Do not guess. Reply in the customer's language.`;
-      const textPart = lastContent.parts.find(part => typeof part?.text === 'string');
-      if (textPart && !textPart.text.includes('RECENTLY SENT CATALOGUE CANDIDATES')) textPart.text += instruction;
       const alreadyAdded = lastContent.parts.some(part => part?.text?.includes('RECENTLY SENT CATALOGUE CANDIDATES'));
+      const textPart = lastContent.parts.find(part => typeof part?.text === 'string');
+      if (textPart && !alreadyAdded) textPart.text += instruction;
       if (!alreadyAdded) lastContent.parts.push(...ctx.imageCandidateParts.map(entry => entry.part));
     }
   }
