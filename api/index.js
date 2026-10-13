@@ -180,7 +180,7 @@ async function injectMemoryIntoAI(url,init,ctx){
   if (ctx.isIncomingImage && !ctx.imageCandidatesLoaded) {
     ctx.imageCandidatesLoaded = true;
     ctx.imageCandidates = await getRecentCandidates(process.env.DATABASE_URL||'', ctx.phone);
-    if (ctx.imageCandidates.length) console.log('[IMAGE SELECTION] Recent sent candidates found:', ctx.imageCandidates.length);
+    console.log(`[candidate-retrieve] found=${ctx.imageCandidates.length} db_configured=${Boolean(process.env.DATABASE_URL)}`);
   }
   if (Array.isArray(payload.contents) && ctx.isIncomingImage && Array.isArray(ctx.imageCandidates) && ctx.imageCandidates.length) {
     if (!ctx.imageCandidatePartsLoaded) {
@@ -191,8 +191,8 @@ async function injectMemoryIntoAI(url,init,ctx){
         return part ? { candidate, part } : null;
       }));
       ctx.imageCandidateParts = fetched.filter(Boolean);
-      if (ctx.imageCandidateParts.length) console.log('[IMAGE SELECTION] Candidate images loaded:', ctx.imageCandidateParts.length);
-      else console.warn('[IMAGE SELECTION] No candidate images could be loaded; continuing with customer image only');
+      console.log(`[candidate-retrieve] image_parts_loaded=${ctx.imageCandidateParts.length} requested=${Math.min(ctx.imageCandidates.length,5)}`);
+      if (!ctx.imageCandidateParts.length) console.warn('[IMAGE SELECTION] No candidate images could be loaded; continuing with customer image only');
     }
     const lastContent = payload.contents[payload.contents.length - 1];
     if (lastContent && lastContent.role === 'user' && Array.isArray(lastContent.parts) && ctx.imageCandidateParts?.length) {
@@ -222,7 +222,15 @@ async function injectMemoryIntoAI(url,init,ctx){
     if(systemIndex>=0&&typeof payload.messages[systemIndex].content==='string')payload.messages[systemIndex].content+=(memory||'')+catalogueContext;
   }
   sanitizeGeminiPayload(payload);
-  if(Array.isArray(payload.contents))console.log('[GEMINI SANITIZE] contents sanitized; unsupported audio metadata removed');
+  if(Array.isArray(payload.contents)) {
+    console.log('[GEMINI SANITIZE] contents sanitized; unsupported audio metadata removed');
+    if (ctx.isIncomingImage) {
+      const imageParts = payload.contents.reduce((count, item) => count + (Array.isArray(item?.parts) ? item.parts.filter(part => part?.inlineData && typeof part.inlineData.data === 'string').length : 0), 0);
+      const customerImage = imageParts > 0 ? 1 : 0;
+      const candidateImages = Math.max(0, imageParts - customerImage);
+      console.log(`[gemini-request] images=${imageParts} customer_image=${customerImage} candidate_images=${candidateImages} payload_prepared=true`);
+    }
+  }
   return {...init,body:JSON.stringify(payload)};
 }
 async function maybeRemember(ctx){if(!ctx||ctx.remembered||!ctx.phone||!ctx.msgId||!ctx.userText||!ctx.aiReply)return;ctx.remembered=true;await remember(process.env.DATABASE_URL||'',ctx.phone,ctx.msgId,ctx.userText,ctx.aiReply,ctx.customerName)}
@@ -234,7 +242,10 @@ async function sendCatalogueImages(ctx,headers){
   for(const product of products){const productUrls=allImages(product);for(const url of productUrls){if(!url||urls.has(url)||!/^https:\/\//i.test(url))continue;urls.add(url);selected.push({product,url})}}
   if(!selected.length)return;ctx.catalogueImagesSent=true;console.log('[CATALOGUE] Sending relevant image set:',selected.length,'images');
   const batchId=crypto.randomUUID();
-  for(const item of selected){try{const price=Number(item.product?.price);const priceText=Number.isFinite(price)?`${item.product?.currency||'PKR'} ${price.toLocaleString('en-PK')}`:'';const caption=`${item.product?.name||'Product'}${priceText?` — ${priceText}`:''}`.slice(0,1024);const response=await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`,{method:'POST',headers,body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:ctx.phone,type:'image',image:{link:item.url,caption}})});if(response.ok){const saved=await recordSentCandidate(process.env.DATABASE_URL||'',ctx.phone,batchId,item.product,item.url);console.log('[CATALOGUE IMAGE] Sent:',item.product?.name||item.url,'| candidate saved:',saved)}else console.error('[CATALOGUE IMAGE] Send failed:',(await response.text()).slice(0,300))}catch(error){console.error('[CATALOGUE IMAGE] Error:',error.message)}}
+  let sentCount=0;
+  let savedCount=0;
+  for(const item of selected){try{const price=Number(item.product?.price);const priceText=Number.isFinite(price)?`${item.product?.currency||'PKR'} ${price.toLocaleString('en-PK')}`:'';const caption=`${item.product?.name||'Product'}${priceText?` — ${priceText}`:''}`.slice(0,1024);const response=await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`,{method:'POST',headers,body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:ctx.phone,type:'image',image:{link:item.url,caption}})});if(response.ok){sentCount++;const saved=await recordSentCandidate(process.env.DATABASE_URL||'',ctx.phone,batchId,item.product,item.url);if(saved)savedCount++;else console.warn('[candidate-save] failed for one sent image; check DATABASE_URL, schema, and image-host allowlist')}else console.error('[CATALOGUE IMAGE] Send failed:',(await response.text()).slice(0,300))}catch(error){console.error('[CATALOGUE IMAGE] Error:',error.message)}}
+  console.log(`[candidate-save] batch=${batchId.slice(0,8)} sent=${sentCount} saved=${savedCount} db_configured=${Boolean(process.env.DATABASE_URL)}`);
 }
 if(originalFetch&&!globalThis.__zaraVoiceFetchPatched){
   globalThis.__zaraVoiceFetchPatched=true;
