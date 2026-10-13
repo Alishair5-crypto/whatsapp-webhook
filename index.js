@@ -498,6 +498,8 @@ Remember full conversation. Use context. Never repeat answered questions.
         const customerName = (contact?.profile?.name || '').trim();
 
         let userMessageText = '';
+        let userImagePart = null;
+        let imageProcessingFailed = false;
 
         if (message.type === 'text') {
           userMessageText = fixCities(message.text?.body || '');
@@ -547,8 +549,99 @@ Remember full conversation. Use context. Never repeat answered questions.
               }
             }
           }
-        } else if (message.type === 'image') userMessageText = '[Customer ne ek image bheji hai — poochein kya dekhna chahte hain]';
-          else if (message.type === 'sticker') userMessageText = '[Customer ne sticker bheja — friendly acknowledgment do]';
+        } else if (message.type === 'image') {
+          // The previous path discarded the actual image and sent only a placeholder.
+          const mediaId = message.image?.id;
+          const caption = String(message.image?.caption || '').trim();
+          userMessageText = caption
+            ? `Customer image caption: ${caption}\nVisually inspect the attached image and compare it with product/design names in conversation history. Identify a design only when evidence supports it; otherwise ask one concise clarification.`
+            : 'Customer ne dress ki image select karke bheji hai. Attached image ko conversation history mein discuss kiye gaye dress designs se visually compare karein. Sirf evidence hone par exact design identify karein; warna ek concise clarification poochein.';
+          if (!mediaId) {
+            imageProcessingFailed = true;
+            console.error('[IMAGE FAIL] WhatsApp image media ID missing');
+          } else {
+            try {
+              const mediaRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, {
+                headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+                signal: AbortSignal.timeout(8000),
+                redirect: 'error'
+              });
+              if (!mediaRes.ok) {
+                imageProcessingFailed = true;
+                console.error('[IMAGE FAIL] Meta media metadata:', mediaRes.status);
+              } else {
+                const mediaData = await mediaRes.json();
+                const mimeType = String(mediaData?.mime_type || '').toLowerCase();
+                const fileSize = Number(mediaData?.file_size || 0);
+                let mediaUrl = null;
+                let safeMediaHost = false;
+                try {
+                  mediaUrl = new URL(mediaData?.url || '');
+                  safeMediaHost = mediaUrl.protocol === 'https:' &&
+                    !mediaUrl.username && !mediaUrl.password &&
+                    (!mediaUrl.port || mediaUrl.port === '443') &&
+                    (mediaUrl.hostname === 'lookaside.fbsbx.com' || mediaUrl.hostname.endsWith('.fbcdn.net'));
+                } catch (_) {
+                  safeMediaHost = false;
+                }
+                if (!safeMediaHost || !['image/jpeg', 'image/png', 'image/webp'].includes(mimeType) ||
+                    !Number.isSafeInteger(fileSize) || fileSize <= 0 || fileSize > 10 * 1024 * 1024) {
+                  imageProcessingFailed = true;
+                  console.error('[IMAGE FAIL] Unsafe URL or unsupported/invalid image metadata');
+                } else {
+                  const imageRes = await fetch(mediaUrl.href, {
+                    headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+                    signal: AbortSignal.timeout(8000),
+                    redirect: 'error'
+                  });
+                  if (!imageRes.ok) {
+                    imageProcessingFailed = true;
+                    console.error('[IMAGE FAIL] Meta image download:', imageRes.status);
+                  } else {
+                    const reader = imageRes.body?.getReader();
+                    const imageChunks = [];
+                    let imageBytes = 0;
+                    if (!reader) {
+                      imageProcessingFailed = true;
+                      console.error('[IMAGE FAIL] Image response body is unavailable');
+                    } else {
+                      while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        imageBytes += value.byteLength;
+                        if (imageBytes > 10 * 1024 * 1024) {
+                          imageProcessingFailed = true;
+                          await reader.cancel().catch(() => {});
+                          imageChunks.length = 0;
+                          console.error('[IMAGE FAIL] Image payload exceeded 10MB limit');
+                          break;
+                        }
+                        imageChunks.push(Buffer.from(value));
+                      }
+                      if (!imageProcessingFailed && imageBytes === 0) {
+                        imageProcessingFailed = true;
+                        console.error('[IMAGE FAIL] Empty image payload');
+                      }
+                      if (!imageProcessingFailed) {
+                        const imageBuffer = Buffer.concat(imageChunks, imageBytes);
+                        userImagePart = {
+                          inline_data: {
+                            mime_type: mimeType,
+                            data: imageBuffer.toString('base64')
+                          }
+                        };
+                        console.log('[IMAGE SUCCESS] Image fetched for Gemini visual analysis');
+                      }
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              imageProcessingFailed = true;
+              console.error('[IMAGE EXCEPTION]', e?.message || e);
+            }
+          }
+        } else if (message.type === 'sticker') userMessageText = '[Customer ne sticker bheja — friendly acknowledgment do]';
           else if (message.type === 'document') userMessageText = '[Customer ne document bheja — poochein kya chahiye]';
           else userMessageText = '[Customer ne kuch bheja — poochein kya chahiye]';
 
@@ -566,7 +659,7 @@ Remember full conversation. Use context. Never repeat answered questions.
 
         const geminiContents = [
           ...history,
-          { role: 'user', parts: [{ text: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }] }
+          { role: 'user', parts: [{ text: (customerName ? `Customer name: ${customerName}\n` : '') + userMessageText }, ...(userImagePart ? [userImagePart] : [])] }
         ];
         const oaiMessages = [
           { role: 'system', content: SYSTEM_PROMPT },
@@ -575,6 +668,13 @@ Remember full conversation. Use context. Never repeat answered questions.
         ];
 
         let aiReply = '';
+        if (imageProcessingFailed) {
+          const caption = String(message.image?.caption || '').trim();
+          const isUrduScript = /[\u0600-\u06FF]/.test(caption) || history.some(entry => /[\u0600-\u06FF]/.test(entry?.parts?.[0]?.text || ''));
+          aiReply = isUrduScript
+            ? 'معذرت، تصویر موصول نہیں ہو سکی۔ براہِ کرم ڈریس کی تصویر دوبارہ بھیج دیں تاکہ میں درست ڈیزائن پہچان سکوں۔'
+            : 'Sorry, I could not access the image. Please resend the dress photo so I can identify the exact design.';
+        }
 
         if (!aiReply && GEMINI_API_KEY) {
           for (const model of ['gemini-3.7-flash', 'gemini-3.6-flash']) {
@@ -634,7 +734,7 @@ Remember full conversation. Use context. Never repeat answered questions.
           }
         }
 
-        if (!aiReply && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
+        if (!aiReply && !userImagePart && CEREBRAS_API_KEY && !isBlocked('cerebras')) {
           for (let att = 1; att <= 2; att++) {
             if (aiReply) break;
             try {
@@ -648,7 +748,7 @@ Remember full conversation. Use context. Never repeat answered questions.
           }
         }
 
-        if (!aiReply && GROQ_API_KEY) {
+        if (!aiReply && !userImagePart && GROQ_API_KEY) {
           for (const gm of ['openai/gpt-oss-120b', 'qwen/qwen3.6-27b']) {
             if (aiReply) break;
             const cbKey = `gr:${gm}`;
@@ -663,7 +763,7 @@ Remember full conversation. Use context. Never repeat answered questions.
           }
         }
 
-        if (!aiReply && OPENROUTER_API_KEY && !isBlocked('or:mistral')) {
+        if (!aiReply && !userImagePart && OPENROUTER_API_KEY && !isBlocked('or:mistral')) {
           try {
             console.log('[STEP B] OpenRouter...');
             const r = await oaiChat({ url:'https://openrouter.ai/api/v1', key:OPENROUTER_API_KEY, model:'mistralai/mistral-7b-instruct:free', messages:oaiMessages });
@@ -674,7 +774,9 @@ Remember full conversation. Use context. Never repeat answered questions.
         }
 
         if (!aiReply) {
-          aiReply = 'تھوڑی دیر میں واپس آتی ہوں، ابھی سسٹم مصروف ہے۔ شکریہ صبر کا 🙏';
+          aiReply = userImagePart
+            ? 'معذرت، ابھی تصویر سے ڈیزائن کی تصدیق نہیں ہو سکی۔ کیا آپ بتا دیں کہ ان میں سے کون سا ڈیزائن منتخب کیا ہے؟ 🙏'
+            : 'تھوڑی دیر میں واپس آتی ہوں، ابھی سسٹم مصروف ہے۔ شکریہ صبر کا 🙏';
           console.warn('[STEP B FALLBACK] All models failed.');
         }
 
