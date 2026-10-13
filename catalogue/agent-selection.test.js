@@ -59,3 +59,18 @@ test('complete-catalogue limit includes all unique products with images', () => 
   ];
   assert.deepEqual(prepareImageLimitedProducts(rows, 50).map(row => row.id), ['A', 'B']);
 });
+test('empty and null inputs remain safe', () => {
+  assert.equal(prepareImageLimitedProducts(null, 3), null);
+  assert.deepEqual(prepareImageLimitedProducts([], 3), []);
+  const rows = [product('A', ['https://img.example/a.jpg'])];
+  assert.equal(prepareImageLimitedProducts(rows, 0), rows);
+});
+
+test('insecure and malformed image URLs are excluded', () => {
+  const rows = [
+    product('HTTP', ['http://img.example/a.jpg']),
+    product('MALFORMED', ['not-a-url']),
+    product('VALID', ['https://img.example/valid.jpg'])
+  ];
+  assert.deepEqual(prepareImageLimitedProducts(rows, 3).map(row => row.id), ['VALID']);
+});
