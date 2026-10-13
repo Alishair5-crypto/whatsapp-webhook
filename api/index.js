@@ -3,6 +3,7 @@ const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('async_hooks');
 const { getMemoryContext, remember } = require('../zara-memory');
 const { getCatalogueForMessage, allImages } = require('../catalogue/agent');
+const { recordSentCandidate, getRecentCandidates, fetchCandidateImagePart } = require('../catalogue/image-selection');
 const originalFetch = globalThis.fetch;
 const memoryContext = new AsyncLocalStorage();
 const catalogueRotation = new Map();
@@ -79,6 +80,13 @@ function sanitizeGeminiPayload(payload) {
     if (!part || typeof part !== 'object') return null;
     if (typeof part.text === 'string') return { text: part.text };
     if (part.inlineData && typeof part.inlineData === 'object') return { inlineData: part.inlineData };
+    // Normalize the snake_case payload created by the inbound WhatsApp image path.
+    if (part.inline_data && typeof part.inline_data === 'object') {
+      const image = part.inline_data;
+      if (typeof image.data === 'string' && typeof image.mime_type === 'string') {
+        return { inlineData: { data: image.data, mimeType: image.mime_type } };
+      }
+    }
     if (part.fileData && typeof part.fileData === 'object') return { fileData: part.fileData };
     if (part.functionCall && typeof part.functionCall === 'object') return { functionCall: part.functionCall };
     if (part.functionResponse && typeof part.functionResponse === 'object') return { functionResponse: part.functionResponse };
@@ -146,7 +154,7 @@ async function getServiceAccountToken(email,key){
     const header=b64(JSON.stringify({alg:'RS256',typ:'JWT'}));
     const payload=b64(JSON.stringify({iss:email,scope:'https://www.googleapis.com/auth/spreadsheets',aud:'https://oauth2.googleapis.com/token',exp:now+3600,iat:now}));
     const signer=crypto.createSign('RSA-SHA256');signer.update(`${header}.${payload}`);
-    const signature=signer.sign(key.replace(/\\n/g,'\n'),'base64url');
+    const signature=signer.sign(key.replace(/\n/g,'\n'),'base64url');
     const response=await originalFetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${header}.${payload}.${signature}`});
     const data=await response.json().catch(()=>null);return data?.access_token||null;
   }catch(error){console.error('[ORDER RECOVERY TOKEN]',error.message);return null;}
@@ -176,11 +184,38 @@ async function injectMemoryIntoAI(url,init,ctx){
   if(!ctx||!init||typeof init.body!=='string')return init;
   let payload;try{payload=JSON.parse(init.body)}catch(_){return init}
   if(!ctx.phone)return init;
+  if (ctx.isIncomingImage && !ctx.imageCandidatesLoaded) {
+    ctx.imageCandidatesLoaded = true;
+    ctx.imageCandidates = await getRecentCandidates(process.env.DATABASE_URL||'', ctx.phone);
+    if (ctx.imageCandidates.length) console.log('[IMAGE SELECTION] Recent sent candidates found:', ctx.imageCandidates.length);
+  }
+  if (Array.isArray(payload.contents) && ctx.isIncomingImage && Array.isArray(ctx.imageCandidates) && ctx.imageCandidates.length) {
+    if (!ctx.imageCandidatePartsLoaded) {
+      ctx.imageCandidatePartsLoaded = true;
+      const allowedHosts = (process.env.ZARA_CATALOGUE_IMAGE_HOSTS || '').split(',');
+      const fetched = await Promise.all(ctx.imageCandidates.slice(0, 5).map(async candidate => {
+        const part = await fetchCandidateImagePart(candidate.url, allowedHosts);
+        return part ? { candidate, part } : null;
+      }));
+      ctx.imageCandidateParts = fetched.filter(Boolean);
+      if (ctx.imageCandidateParts.length) console.log('[IMAGE SELECTION] Candidate images loaded:', ctx.imageCandidateParts.length);
+      else console.warn('[IMAGE SELECTION] No candidate images could be loaded; continuing with customer image only');
+    }
+    const lastContent = payload.contents[payload.contents.length - 1];
+    if (lastContent && lastContent.role === 'user' && Array.isArray(lastContent.parts) && ctx.imageCandidateParts?.length) {
+      const names = ctx.imageCandidateParts.map((entry, index) => `${index + 1}. ${entry.candidate.name}${entry.candidate.id ? ` (catalogue ID: ${entry.candidate.id})` : ''}`).join('\n');
+      const instruction = `\n\nRECENTLY SENT CATALOGUE CANDIDATES (visual reference images attached after this text):\n${names}\nCompare the customer's attached photo against these candidate images. If one clearly matches, name that exact catalogue design and ID when available. If no clear match, say so and ask one short clarification. Do not guess. Reply in the customer's language.`;
+      const alreadyAdded = lastContent.parts.some(part => part?.text?.includes('RECENTLY SENT CATALOGUE CANDIDATES'));
+      const textPart = lastContent.parts.find(part => typeof part?.text === 'string');
+      if (textPart && !alreadyAdded) textPart.text += instruction;
+      if (!alreadyAdded) lastContent.parts.push(...ctx.imageCandidateParts.map(entry => entry.part));
+    }
+  }
   let query=ctx.userText||'';
   try{const last=payload?.contents?.[payload.contents.length-1]?.parts?.[0]?.text;if(typeof last==='string')query=last}catch(_){}
   if(!query){try{const last=payload?.messages?.[payload.messages.length-1]?.content;if(typeof last==='string')query=last}catch(_){}
   }
-  if(query)ctx.userText=query.replace(/^Customer name:\s*[^\n]+\n/i,'').trim();
+  if(query)ctx.userText=query.replace(/^Customer name:\s*[^\n]+\n/i,'').replace(/\n\nRECENTLY SENT CATALOGUE CANDIDATES[\s\S]*$/,'').trim();
   if(!ctx.catalogueChecked&&ctx.userText){ctx.catalogueChecked=true;ctx.catalogue=await getCatalogueForMessage(process.env.DATABASE_URL||'',ctx.userText)}
   const memory=await getMemoryContext(process.env.DATABASE_URL||'',ctx.phone,ctx.userText);
   const catalogueContext=ctx.catalogue?.context||'';
@@ -205,7 +240,8 @@ async function sendCatalogueImages(ctx,headers){
   const products=rotateProducts(ctx.catalogue.products,ctx.phone);const selected=[];const urls=new Set();
   for(const product of products){const productUrls=allImages(product);for(const url of productUrls){if(!url||urls.has(url)||!/^https:\/\//i.test(url))continue;urls.add(url);selected.push({product,url})}}
   if(!selected.length)return;ctx.catalogueImagesSent=true;console.log('[CATALOGUE] Sending relevant image set:',selected.length,'images');
-  for(const item of selected){try{const price=Number(item.product?.price);const priceText=Number.isFinite(price)?`${item.product?.currency||'PKR'} ${price.toLocaleString('en-PK')}`:'';const caption=`${item.product?.name||'Product'}${priceText?` — ${priceText}`:''}`.slice(0,1024);const response=await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`,{method:'POST',headers,body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:ctx.phone,type:'image',image:{link:item.url,caption}})});if(response.ok)console.log('[CATALOGUE IMAGE] Sent:',item.product?.name||item.url);else console.error('[CATALOGUE IMAGE] Send failed:',(await response.text()).slice(0,300))}catch(error){console.error('[CATALOGUE IMAGE] Error:',error.message)}}
+  const batchId=crypto.randomUUID();
+  for(const item of selected){try{const price=Number(item.product?.price);const priceText=Number.isFinite(price)?`${item.product?.currency||'PKR'} ${price.toLocaleString('en-PK')}`:'';const caption=`${item.product?.name||'Product'}${priceText?` — ${priceText}`:''}`.slice(0,1024);const response=await originalFetch(`https://graph.facebook.com/v20.0/${process.env.PHONE_NUMBER_ID}/messages`,{method:'POST',headers,body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to:ctx.phone,type:'image',image:{link:item.url,caption}})});if(response.ok){const saved=await recordSentCandidate(process.env.DATABASE_URL||'',ctx.phone,batchId,item.product,item.url);console.log('[CATALOGUE IMAGE] Sent:',item.product?.name||item.url,'| candidate saved:',saved)}else console.error('[CATALOGUE IMAGE] Send failed:',(await response.text()).slice(0,300))}catch(error){console.error('[CATALOGUE IMAGE] Error:',error.message)}}
 }
 if(originalFetch&&!globalThis.__zaraVoiceFetchPatched){
   globalThis.__zaraVoiceFetchPatched=true;
@@ -241,6 +277,6 @@ module.exports=async(req,res)=>{
   const body=req?.body&&typeof req.body==='object'?req.body:{};
   const message=body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
   const contact=body?.entry?.[0]?.changes?.[0]?.value?.contacts?.find(c=>c?.wa_id===message?.from)||body?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
-  const ctx={phone:message?.from||'',msgId:message?.id||'',customerName:(contact?.profile?.name||'').trim(),userText:typeof message?.text?.body==='string'?message.text.body:'',aiReply:'',remembered:false,catalogueChecked:false,catalogue:null,catalogueImagesSent:false,orderSheetWriteAttempted:false,orderSheetWriteSucceeded:false};
+  const ctx={phone:message?.from||'',msgId:message?.id||'',customerName:(contact?.profile?.name||'').trim(),userText:typeof message?.text?.body==='string'?message.text.body:'',aiReply:'',remembered:false,catalogueChecked:false,catalogue:null,catalogueImagesSent:false,orderSheetWriteAttempted:false,orderSheetWriteSucceeded:false,isIncomingImage:message?.type==='image',imageCandidates:[],imageCandidatePartsLoaded:false,imageCandidateParts:[]};
   return memoryContext.run(ctx,()=>originalHandler(req,res));
 };
