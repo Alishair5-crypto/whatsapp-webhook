@@ -598,18 +598,40 @@ Remember full conversation. Use context. Never repeat answered questions.
                     imageProcessingFailed = true;
                     console.error('[IMAGE FAIL] Meta image download:', imageRes.status);
                   } else {
-                    const imageBuffer = await imageRes.arrayBuffer();
-                    if (imageBuffer.byteLength === 0 || imageBuffer.byteLength > 10 * 1024 * 1024) {
+                    const reader = imageRes.body?.getReader();
+                    const imageChunks = [];
+                    let imageBytes = 0;
+                    if (!reader) {
                       imageProcessingFailed = true;
-                      console.error('[IMAGE FAIL] Empty or oversized image payload');
+                      console.error('[IMAGE FAIL] Image response body is unavailable');
                     } else {
-                      userImagePart = {
-                        inline_data: {
-                          mime_type: mimeType,
-                          data: Buffer.from(imageBuffer).toString('base64')
+                      while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        imageBytes += value.byteLength;
+                        if (imageBytes > 10 * 1024 * 1024) {
+                          imageProcessingFailed = true;
+                          await reader.cancel().catch(() => {});
+                          imageChunks.length = 0;
+                          console.error('[IMAGE FAIL] Image payload exceeded 10MB limit');
+                          break;
                         }
-                      };
-                      console.log('[IMAGE SUCCESS] Image fetched for Gemini visual analysis');
+                        imageChunks.push(Buffer.from(value));
+                      }
+                      if (!imageProcessingFailed && imageBytes === 0) {
+                        imageProcessingFailed = true;
+                        console.error('[IMAGE FAIL] Empty image payload');
+                      }
+                      if (!imageProcessingFailed) {
+                        const imageBuffer = Buffer.concat(imageChunks, imageBytes);
+                        userImagePart = {
+                          inline_data: {
+                            mime_type: mimeType,
+                            data: imageBuffer.toString('base64')
+                          }
+                        };
+                        console.log('[IMAGE SUCCESS] Image fetched for Gemini visual analysis');
+                      }
                     }
                   }
                 }
