@@ -1,0 +1,32 @@
+name: PDF Delivery Audit
+
+on:
+  push:
+    branches:
+      - fix/whatsapp-order-pdf-delivery
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Syntax checks
+        run: |
+          node --check api/whatsapp-router.js
+          node --check index.js
+          node --check lib/order-store.js
+          node --check lib/order-pdf.js
+      - name: PDF invoice tests
+        run: npm run test:pdf
+      - name: Existing catalogue regression tests
+        run: npm run test:catalogue
