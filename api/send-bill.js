@@ -21,6 +21,10 @@ function cleanText(value, field, maxLength) {
   if (cleaned.length > maxLength) {
     throw new Error(field + " must be " + maxLength + " characters or fewer.");
   }
+  // Standard Helvetica uses WinAnsi; Urdu and other unsupported glyphs cannot be embedded.
+  if (/[^\\x20-\\x7E\\xA0-\\xFF]/.test(cleaned)) {
+    throw new Error(field + " contains characters unsupported by the required standard Helvetica PDF font. Use Latin/WinAnsi text.");
+  }
   return cleaned;
 }
 
@@ -93,6 +97,9 @@ async function createBillPdf(details) {
     }
     if (line) lines.push(line);
     if (lines.length > 5) throw new Error(label + " is too long to fit on the bill.");
+    if (y - ((lines.length - 1) * 17) < 75) {
+      throw new Error("Bill details are too long to fit on the page.");
+    }
 
     for (let i = 0; i < lines.length; i += 1) {
       page.drawText(lines[i], {
