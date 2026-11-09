@@ -16,13 +16,19 @@ function evaluateClaim(claim, evidence, options = {}) {
   if (!claim || typeof claim !== 'object' || Array.isArray(claim) ||
       !ALLOWED_FIELDS.has(claim.field) ||
       !Object.prototype.hasOwnProperty.call(claim, 'value') ||
-      (claim.subjectId !== undefined && typeof claim.subjectId !== 'string')) {
+      claim.value === null ||
+      !['string', 'number', 'boolean'].includes(typeof claim.value) ||
+      (typeof claim.value === 'string' && claim.value.length > 1000) ||
+      (typeof claim.value === 'number' && !Number.isFinite(claim.value)) ||
+      typeof claim.subjectId !== 'string' ||
+      !claim.subjectId.trim() ||
+      claim.subjectId.length > 160) {
     return { allowed: false, reason: 'invalid_claim' };
   }
 
   const matching = evidence.filter(item =>
     item.field === claim.field &&
-    (item.subjectId || '') === (claim.subjectId || '')
+    item.subjectId === claim.subjectId.trim()
   );
   if (!matching.length) return { allowed: false, reason: 'evidence_missing' };
 
@@ -41,8 +47,8 @@ function evaluateClaim(claim, evidence, options = {}) {
   const values = new Set(verified.map(item => comparable(item.value)));
   if (values.size > 1) return { allowed: false, reason: 'evidence_conflict' };
 
-  const evidenceTime = Date.parse(verified[0].verifiedAt);
-  if (!Number.isFinite(evidenceTime) || evidenceTime > now || now - evidenceTime > maxAgeMs) {
+  const latestEvidenceTime = Math.max(...verified.map(item => Date.parse(item.verifiedAt)));
+  if (!Number.isFinite(latestEvidenceTime) || latestEvidenceTime > now || now - latestEvidenceTime > maxAgeMs) {
     return { allowed: false, reason: 'evidence_stale' };
   }
 
@@ -50,11 +56,12 @@ function evaluateClaim(claim, evidence, options = {}) {
     return { allowed: false, reason: 'claim_mismatch' };
   }
 
+  const latest = verified.find(item => Date.parse(item.verifiedAt) === latestEvidenceTime);
   return {
     allowed: true,
     reason: 'verified_match',
-    source: verified[0].source,
-    verifiedAt: verified[0].verifiedAt
+    source: latest.source,
+    verifiedAt: latest.verifiedAt
   };
 }
 
