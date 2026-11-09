@@ -93,6 +93,14 @@ test('handles empty claims and rejects malformed collection arguments', () => {
   assert.deepEqual(validateClaims([], [], { now: NOW }), { allowed: true, results: [] });
   assert.throws(() => validateClaims({}, []), TypeError);
   assert.throws(() => validateClaims([], {}), TypeError);
+  assert.throws(() => validateClaims(null, []), TypeError);
+  assert.throws(() => evaluateClaim({ field: 'price', value: 1, subjectId: 'p1' }, null), TypeError);
+  assert.throws(() => evaluateClaim({ field: 'price', value: 1, subjectId: 'p1' }, [], null), TypeError);
+});
+
+test('rejects oversized evidence and claim batches', () => {
+  assert.throws(() => buildEvidencePack(Array(501).fill(fresh())), RangeError);
+  assert.throws(() => validateClaims(Array(501).fill({ field: 'price', value: 4500, subjectId: 'product-1' }), []), RangeError);
 });
 
 test('shadow mode reports a block without mutating the input or producing a reply', () => {
@@ -104,6 +112,11 @@ test('shadow mode reports a block without mutating the input or producing a repl
   assert.equal(result.wouldAllow, false);
   assert.equal(JSON.stringify(input), before);
   assert.equal(Object.prototype.hasOwnProperty.call(result, 'reply'), false);
+});
+
+test('shadow mode rejects null collections rather than silently treating them as empty', () => {
+  assert.throws(() => evaluateShadow({ claims: null, evidence: [] }), TypeError);
+  assert.throws(() => evaluateShadow({ claims: [], evidence: null }), TypeError);
 });
 
 test('shadow mode allows an empty claims batch without any DB/network dependency', () => {
