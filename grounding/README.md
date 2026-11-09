@@ -14,13 +14,13 @@ The branch is intentionally isolated. Integration requires a separate review and
 
 Each evidence item has:
 - `field`: one of `product_name`, `price`, `stock`, `color`, `order_status`, `payment_status`, `delivery_status`, `customer_preference`;
-- `value`: string, finite number, boolean, or null;
+- `value`: string, finite number, boolean, or null for non-verified states;
 - `source`: non-empty source identifier;
 - `status`: `verified`, `partial`, `unknown`, `conflict`, `unavailable`, or `stale`;
 - `verifiedAt`: valid timestamp; mandatory for `verified`;
-- optional `subjectId`: product/order/customer scope identifier.
+- `subjectId`: mandatory product/order/customer scope identifier (maximum 160 characters).
 
-Customer preference is an allowed evidence field for preference matching only. It is not an authority for price, inventory, payment, delivery, or policy facts.
+Verified evidence must have a non-null value. String values are limited to 1000 characters. Customer preference is an allowed evidence field for preference matching only. It is not an authority for price, inventory, payment, delivery, or policy facts.
 
 ## Evaluation rules
 
