@@ -20,7 +20,7 @@ Each evidence item has:
 - `verifiedAt`: valid timestamp; mandatory for `verified`;
 - `subjectId`: mandatory product/order/customer scope identifier (maximum 160 characters).
 
-Verified evidence must have a non-null value. String values are limited to 1000 characters. Customer preference is an allowed evidence field for preference matching only. It is not an authority for price, inventory, payment, delivery, or policy facts.
+Verified evidence must have a non-null value. String values are limited to 1000 characters. Evidence and claim batches are capped at 500 items. Customer preference is an allowed evidence field for preference matching only. It is not an authority for price, inventory, payment, delivery, or policy facts.
 
 ## Evaluation rules
 
