@@ -23,9 +23,12 @@ test('accepts a fresh exact verified claim', () => {
 });
 
 test('blocks absent evidence and invalid claims', () => {
-  assert.equal(evaluateClaim({ field: 'stock', value: 4 }, [], { now: NOW }).reason, 'evidence_missing');
-  assert.equal(evaluateClaim({ field: 'unknown_field', value: 4 }, [], { now: NOW }).reason, 'invalid_claim');
+  assert.equal(evaluateClaim({ field: 'stock', value: 4, subjectId: 'product-1' }, [], { now: NOW }).reason, 'evidence_missing');
+  assert.equal(evaluateClaim({ field: 'unknown_field', value: 4, subjectId: 'product-1' }, [], { now: NOW }).reason, 'invalid_claim');
   assert.equal(evaluateClaim(null, [], { now: NOW }).reason, 'invalid_claim');
+  assert.equal(evaluateClaim({ field: 'price', value: 4500 }, [], { now: NOW }).reason, 'invalid_claim');
+  assert.equal(evaluateClaim({ field: 'price', value: null, subjectId: 'product-1' }, [], { now: NOW }).reason, 'invalid_claim');
+  assert.equal(evaluateClaim({ field: 'price', value: 'x'.repeat(1001), subjectId: 'product-1' }, [], { now: NOW }).reason, 'invalid_claim');
 });
 
 test('blocks unknown, unavailable, partial and stale statuses', () => {
@@ -51,6 +54,11 @@ test('prevents cross-subject evidence from authorizing another product', () => {
   assert.equal(evaluateClaim({ field: 'price', value: 4500, subjectId: 'product-B' }, evidence, { now: NOW }).reason, 'evidence_missing');
 });
 
+test('requires an explicit subject identifier on evidence and claims', () => {
+  assert.throws(() => buildEvidencePack([fresh({ subjectId: undefined })]), /subjectId is required/);
+  assert.equal(evaluateClaim({ field: 'price', value: 4500 }, buildEvidencePack([fresh()]), { now: NOW }).reason, 'invalid_claim');
+});
+
 test('blocks mismatched values but normalizes harmless string casing and whitespace', () => {
   const evidence = buildEvidencePack([fresh({ field: 'color', value: ' Blue ' })]);
   assert.equal(evaluateClaim({ field: 'color', value: 'blue', subjectId: 'product-1' }, evidence, { now: NOW }).allowed, true);
@@ -64,9 +72,21 @@ test('rejects malformed evidence at the boundary', () => {
     { ...fresh(), status: 'maybe' },
     { ...fresh(), value: { price: 4500 } },
     { ...fresh(), verifiedAt: 'not-a-date' },
-    { ...fresh(), status: 'verified', verifiedAt: null }
+    { ...fresh(), status: 'verified', verifiedAt: null },
+    { ...fresh(), status: 'verified', value: null },
+    { ...fresh(), value: 'x'.repeat(1001) }
   ]) assert.throws(() => buildEvidencePack([item]), TypeError);
   assert.throws(() => buildEvidencePack(null), TypeError);
+});
+
+test('uses the newest timestamp when duplicate verified sources agree', () => {
+  const evidence = buildEvidencePack([
+    fresh({ verifiedAt: '2026-11-09T11:40:00.000Z', source: 'old_source' }),
+    fresh({ verifiedAt: '2026-11-09T11:59:30.000Z', source: 'new_source' })
+  ]);
+  const result = evaluateClaim({ field: 'price', value: 4500, subjectId: 'product-1' }, evidence, { now: NOW });
+  assert.equal(result.allowed, true);
+  assert.equal(result.source, 'new_source');
 });
 
 test('handles empty claims and rejects malformed collection arguments', () => {
