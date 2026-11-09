@@ -9,8 +9,10 @@ function evaluateShadow(input, options = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('Shadow input must be an object');
   }
-  const evidence = buildEvidencePack(input.evidence || []);
-  const validation = validateClaims(input.claims || [], evidence, options);
+  const evidenceEntries = input.evidence === undefined ? [] : input.evidence;
+  const claims = input.claims === undefined ? [] : input.claims;
+  const evidence = buildEvidencePack(evidenceEntries);
+  const validation = validateClaims(claims, evidence, options);
 
   return Object.freeze({
     mode: 'shadow_only',
