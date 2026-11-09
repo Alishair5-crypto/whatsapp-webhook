@@ -1,6 +1,7 @@
 'use strict';
 
-const { ALLOWED_FIELDS } = require('./contracts');
+const { ALLOWED_FIELDS, MAX_EVIDENCE_ITEMS } = require('./contracts');
+const MAX_CLAIMS = 500;
 
 function comparable(value) {
   if (typeof value === 'string') return value.normalize('NFC').trim().toLocaleLowerCase('en');
@@ -8,6 +9,12 @@ function comparable(value) {
 }
 
 function evaluateClaim(claim, evidence, options = {}) {
+  if (!Array.isArray(evidence)) throw new TypeError('Evidence must be an array');
+  if (evidence.length > MAX_EVIDENCE_ITEMS) throw new RangeError('Evidence pack exceeds 500 items');
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError('Validation options must be an object');
+  }
+
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const maxAgeMs = Number.isFinite(options.maxAgeMs) && options.maxAgeMs >= 0
     ? options.maxAgeMs
@@ -67,7 +74,9 @@ function evaluateClaim(claim, evidence, options = {}) {
 
 function validateClaims(claims, evidence, options = {}) {
   if (!Array.isArray(claims)) throw new TypeError('Claims must be an array');
+  if (claims.length > MAX_CLAIMS) throw new RangeError('Claims batch exceeds 500 items');
   if (!Array.isArray(evidence)) throw new TypeError('Evidence must be an array');
+  if (evidence.length > MAX_EVIDENCE_ITEMS) throw new RangeError('Evidence pack exceeds 500 items');
 
   const results = claims.map(claim => evaluateClaim(claim, evidence, options));
   return {
@@ -76,4 +85,4 @@ function validateClaims(claims, evidence, options = {}) {
   };
 }
 
-module.exports = { evaluateClaim, validateClaims };
+module.exports = { evaluateClaim, validateClaims, MAX_CLAIMS };
