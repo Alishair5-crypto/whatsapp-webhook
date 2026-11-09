@@ -18,6 +18,7 @@ const ALLOWED_STATUSES = new Set([
   'unavailable',
   'stale'
 ]);
+const MAX_EVIDENCE_ITEMS = 500;
 
 function assertPlainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -71,7 +72,8 @@ function normalizeEvidence(entry) {
 
 function buildEvidencePack(entries) {
   if (!Array.isArray(entries)) throw new TypeError('Evidence entries must be an array');
+  if (entries.length > MAX_EVIDENCE_ITEMS) throw new RangeError('Evidence pack exceeds 500 items');
   return Object.freeze(entries.map(normalizeEvidence));
 }
 
-module.exports = { ALLOWED_FIELDS, ALLOWED_STATUSES, buildEvidencePack, normalizeEvidence };
+module.exports = { ALLOWED_FIELDS, ALLOWED_STATUSES, MAX_EVIDENCE_ITEMS, buildEvidencePack, normalizeEvidence };
