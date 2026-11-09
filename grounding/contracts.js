@@ -35,11 +35,14 @@ function normalizeEvidence(entry) {
   if (entry.value !== null && !['string', 'number', 'boolean'].includes(typeof entry.value)) {
     throw new TypeError('Evidence value must be a string, number, boolean, or null');
   }
+  if (typeof entry.value === 'string' && entry.value.length > 1000) {
+    throw new TypeError('Evidence string value must not exceed 1000 characters');
+  }
   if (typeof entry.value === 'number' && !Number.isFinite(entry.value)) {
     throw new TypeError('Evidence number must be finite');
   }
-  if (entry.subjectId !== undefined && (typeof entry.subjectId !== 'string' || entry.subjectId.length > 160)) {
-    throw new TypeError('Evidence subjectId must be a string of at most 160 characters');
+  if (typeof entry.subjectId !== 'string' || !entry.subjectId.trim() || entry.subjectId.length > 160) {
+    throw new TypeError('Evidence subjectId is required and must be a string of at most 160 characters');
   }
 
   let verifiedAt = null;
@@ -52,6 +55,9 @@ function normalizeEvidence(entry) {
   if (entry.status === 'verified' && !verifiedAt) {
     throw new TypeError('Verified evidence requires verifiedAt');
   }
+  if (entry.status === 'verified' && entry.value === null) {
+    throw new TypeError('Verified evidence cannot have a null value');
+  }
 
   return Object.freeze({
     field: entry.field,
@@ -59,7 +65,7 @@ function normalizeEvidence(entry) {
     source: entry.source.trim(),
     status: entry.status,
     verifiedAt,
-    ...(entry.subjectId ? { subjectId: entry.subjectId } : {})
+    subjectId: entry.subjectId.trim()
   });
 }
 
